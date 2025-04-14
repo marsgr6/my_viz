@@ -1,8 +1,8 @@
 import streamlit as st
-import missingno as msno
 import pandas as pd
-import matplotlib.pyplot as plt
 import numpy as np
+import missingno as msno
+import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
 import plotly.figure_factory as ff
@@ -14,12 +14,73 @@ import warnings
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
 
-# Custom CSS to make the plot region wider
 st.set_page_config(layout="wide")
 
-def plot_data():
-    """Interactive plotting function for exploring a user-uploaded CSV dataset in Streamlit."""
-    
+# --- HOME SECTION ---
+def home():
+    st.title("🏠 Home: Data Upload & Selection")
+
+    uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
+
+    if uploaded_file:
+        df = pd.read_csv(uploaded_file)
+        st.success("File successfully uploaded!")
+
+        # Display column info
+        st.subheader("🔍 Column Overview")
+        col_info = pd.DataFrame({
+            "Column": df.columns,
+            "Type": [df[col].dtype for col in df.columns],
+            "Unique Values": [df[col].nunique() for col in df.columns]
+        })
+        st.dataframe(col_info)
+
+        # Column selection
+        selected_columns = st.multiselect(
+            "Select columns to keep", options=df.columns, default=df.columns.tolist()
+        )
+        df = df[selected_columns]
+
+        # Manual type assignment
+        st.subheader("🔧 Assign Variable Types")
+        numeric_cols = st.multiselect("Select numeric variables", options=selected_columns,
+                                      default=df.select_dtypes(include='number').columns.tolist())
+        categorical_cols = st.multiselect("Select categorical variables", options=[col for col in selected_columns if col not in numeric_cols],
+                                          default=df.select_dtypes(include='object').columns.tolist())
+
+        # Subsampling
+        st.subheader("🧪 Random Subsampling")
+        sample_pct = st.slider("Select percentage of data to use", min_value=1, max_value=100, value=100)
+        if sample_pct < 100:
+            df = df.sample(frac=sample_pct / 100, random_state=42)
+            st.info(f"Dataset has been subsampled to {len(df)} rows.")
+
+        st.write("📊 Preview of the filtered dataset:")
+        st.dataframe(df.head())
+
+        # Save filtered info in session state
+        st.session_state["filtered_df"] = df
+        st.session_state["numeric_cols"] = numeric_cols
+        st.session_state["categorical_cols"] = categorical_cols
+
+# --- VISUALIZATION SECTION ---
+def visualization():
+    st.title("🧪 Visualization: Interactive Data Exploration")
+
+    # Check if filtered data exists in session state
+    if "filtered_df" not in st.session_state:
+        st.warning("Please upload and process a dataset in the Home section first.")
+        return
+
+    # Retrieve data from session state
+    data = st.session_state["filtered_df"]
+    numeric_cols = st.session_state["numeric_cols"]
+    categorical_cols = st.session_state["categorical_cols"]
+
+    # Convert categorical columns to strings
+    for col in data.select_dtypes(include='category').columns:
+        data[col] = data[col].astype('str')
+
     # Define plot types
     PLOT_TYPES = [
         'bars', 'boxes', 'ridges', 'histogram', 'density 1', 'density 2', 
@@ -27,26 +88,8 @@ def plot_data():
         'pairplot', 'regression'
     ]
 
-    # Streamlit UI for file upload
-    st.sidebar.header("Upload and Plot Selection")
-    uploaded_file = st.sidebar.file_uploader("Upload a CSV file", type=["csv"])
-
-    if uploaded_file is None:
-        st.write("Please upload a CSV file to begin.")
-        return
-
-    # Read and preprocess data
-    try:
-        data = pd.read_csv(uploaded_file)
-    except Exception as e:
-        st.error(f"Error reading CSV file: {e}")
-        return
-
-    # Convert categorical columns to strings
-    for col in data.select_dtypes(include='category').columns:
-        data[col] = data[col].astype('str')
-
-    # Streamlit UI elements for plot selection
+    # Streamlit UI elements for plot selection (in sidebar)
+    st.sidebar.header("Plot Selection")
     plot_type = st.sidebar.selectbox("Select Plot Type", PLOT_TYPES)
     risk_it_all = st.sidebar.checkbox("Risk It All", value=False)
 
@@ -110,18 +153,18 @@ def plot_data():
             st.plotly_chart(fig, use_container_width=True)
 
         elif plot_type == "pairplot":
-            hue_var = st.sidebar.selectbox("Hue Variable", data.select_dtypes(include='object').columns, index=0)
-            numeric_cols = list(data.select_dtypes(include='number').columns)
-            if not numeric_cols:
+            hue_var = st.sidebar.selectbox("Hue Variable", categorical_cols, index=0)
+            numeric_cols_list = list(data.select_dtypes(include='number').columns)
+            if not numeric_cols_list:
                 st.warning("No numeric columns available for pairplot.")
                 return
             
             # Create subplot grid without shared axes
-            n_cols = len(numeric_cols)
+            n_cols = len(numeric_cols_list)
             fig = make_subplots(
                 rows=n_cols, cols=n_cols,
-                row_titles=numeric_cols,
-                column_titles=numeric_cols,
+                row_titles=numeric_cols_list,
+                column_titles=numeric_cols_list,
                 vertical_spacing=0.05,
                 horizontal_spacing=0.05,
                 shared_xaxes=False,
@@ -130,9 +173,9 @@ def plot_data():
             
             # Plot KDEs on diagonal and scatters off-diagonal
             for i in range(n_cols):
-                col_i = numeric_cols[i]
+                col_i = numeric_cols_list[i]
                 for j in range(n_cols):
-                    col_j = numeric_cols[j]
+                    col_j = numeric_cols_list[j]
                     # Diagonal: KDEs by hue
                     if i == j:
                         for k, hue_val in enumerate(data[hue_var].unique()):
@@ -190,14 +233,12 @@ def plot_data():
             # Update axes ranges for each subplot independently
             for i in range(n_cols):
                 for j in range(n_cols):
-                    col_i = numeric_cols[i]
-                    col_j = numeric_cols[j]
-                    # Compute ranges, handling NaN values
+                    col_i = numeric_cols_list[i]
+                    col_j = numeric_cols_list[j]
                     x_data = data[col_j].dropna()
                     y_data = data[col_i].dropna()
                     x_range = [min(x_data), max(x_data)] if not x_data.empty else [0, 1]
                     y_range = [0, 1.2] if i == j else [min(y_data), max(y_data)] if not y_data.empty else [0, 1]
-                    # Extend ranges slightly to ensure all points are visible
                     x_margin = (x_range[1] - x_range[0]) * 0.05
                     y_margin = (y_range[1] - y_range[0]) * 0.05 if i != j else 0.1
                     x_range = [x_range[0] - x_margin, x_range[1] + x_margin]
@@ -231,8 +272,8 @@ def plot_data():
         else:
             # Bars
             if plot_type == 'bars':
-                x_cols = data.columns if risk_it_all else data.select_dtypes(include='object').columns
-                hue_cols = data.columns if risk_it_all else data.select_dtypes(include='object').columns
+                x_cols = data.columns if risk_it_all else categorical_cols
+                hue_cols = data.columns if risk_it_all else categorical_cols
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
                 hue = st.sidebar.selectbox("Hue", hue_cols, index=0)
                 tplot = st.sidebar.selectbox("Plot Type", ["bars", "heatmap"])
@@ -253,9 +294,9 @@ def plot_data():
 
             # Boxes
             if plot_type == 'boxes':
-                x_cols = data.columns if risk_it_all else data.select_dtypes(include='object').columns
-                y_cols = data.columns if risk_it_all else data.select_dtypes(include='number').columns
-                hue_cols = data.columns if risk_it_all else data.select_dtypes(include='object').columns
+                x_cols = data.columns if risk_it_all else categorical_cols
+                y_cols = data.columns if risk_it_all else numeric_cols
+                hue_cols = data.columns if risk_it_all else categorical_cols
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
                 var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
                 hue = st.sidebar.selectbox("Hue", hue_cols, index=0)
@@ -277,9 +318,9 @@ def plot_data():
 
             # Ridges
             elif plot_type == 'ridges':
-                x_cols = data.columns if risk_it_all else data.select_dtypes(include='object').columns
-                y_cols = data.columns if risk_it_all else data.select_dtypes(include='number').columns
-                hue_cols = data.columns if risk_it_all else data.select_dtypes(include='object').columns
+                x_cols = data.columns if risk_it_all else categorical_cols
+                y_cols = data.columns if risk_it_all else numeric_cols
+                hue_cols = data.columns if risk_it_all else categorical_cols
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
                 var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
                 hue_var = st.sidebar.selectbox("Hue Variable", hue_cols, index=0)
@@ -347,8 +388,8 @@ def plot_data():
 
             # Histogram
             elif plot_type == 'histogram':
-                x_cols = data.columns if risk_it_all else data.select_dtypes(include='number').columns
-                hue_cols = data.columns if risk_it_all else data.select_dtypes(include='object').columns
+                x_cols = data.columns if risk_it_all else numeric_cols
+                hue_cols = data.columns if risk_it_all else categorical_cols
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
                 hue_var = st.sidebar.selectbox("Hue Variable", hue_cols, index=0)
                 multiple = st.sidebar.selectbox("Multiple", ["layer", "dodge", "stack"])
@@ -392,8 +433,8 @@ def plot_data():
 
             # Density 1
             elif plot_type == 'density 1':
-                x_cols = data.columns if risk_it_all else data.select_dtypes(include='number').columns
-                hue_cols = data.columns if risk_it_all else data.select_dtypes(include='object').columns
+                x_cols = data.columns if risk_it_all else numeric_cols
+                hue_cols = data.columns if risk_it_all else categorical_cols
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
                 hue_var = st.sidebar.selectbox("Hue Variable", hue_cols, index=0)
                 multiple = st.sidebar.selectbox("Multiple", ["layer", "stack"])
@@ -446,10 +487,10 @@ def plot_data():
 
             # Density 2
             elif plot_type == 'density 2':
-                x_cols = data.columns if risk_it_all else data.select_dtypes(include='number').columns
-                y_cols = data.columns if risk_it_all else data.select_dtypes(include='number').columns
-                hue_cols = data.columns if risk_it_all else data.select_dtypes(include='object').columns
-                col_cols = data.columns if risk_it_all else data.select_dtypes(include='object').columns
+                x_cols = data.columns if risk_it_all else numeric_cols
+                y_cols = data.columns if risk_it_all else numeric_cols
+                hue_cols = data.columns if risk_it_all else categorical_cols
+                col_cols = data.columns if risk_it_all else categorical_cols
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
                 var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
                 hue_var = st.sidebar.selectbox("Hue Variable", hue_cols, index=0)
@@ -478,38 +519,67 @@ def plot_data():
 
             # Scatter
             elif plot_type == 'scatter':
-                x_cols = data.columns if risk_it_all else data.select_dtypes(include='number').columns
-                y_cols = data.columns if risk_it_all else data.select_dtypes(include='number').columns
-                hue_cols = data.columns if risk_it_all else data.select_dtypes(include='object').columns
-                style_cols = data.columns if risk_it_all else data.select_dtypes(include='object').columns
-                size_cols = data.columns if risk_it_all else data.select_dtypes(include='number').columns
+                x_cols = data.columns if risk_it_all else numeric_cols
+                y_cols = data.columns if risk_it_all else numeric_cols
+                hue_cols = data.columns if risk_it_all else categorical_cols
+                style_cols = data.columns if risk_it_all else categorical_cols
+                size_cols = data.columns if risk_it_all else numeric_cols
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
                 var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
                 hue = st.sidebar.selectbox("Hue", hue_cols, index=0)
                 style = st.sidebar.selectbox("Style", style_cols, index=0)
                 size = st.sidebar.selectbox("Size", size_cols, index=0)
                 alpha = st.sidebar.slider("Alpha", 0.0, 1.0, 0.5, 0.01)
+                size_max = st.sidebar.slider("Max Marker Size", 5, 50, 10, 5)  # New slider for size_max
                 use_style = st.sidebar.checkbox("Use Style", value=False)
-                # Handle NaN in size column
-                plot_data = data
-                size_param = size if size in data.columns else None
-                if size_param and plot_data[size].isna().any():
-                    st.warning(f"Size column '{size}' contains NaN values. Dropping rows with NaN in size.")
-                    plot_data = plot_data.dropna(subset=[size])
-                fig = px.scatter(plot_data, x=var_x, y=var_y, color=hue, 
-                                size=size_param, 
-                                symbol=style if use_style else None, 
-                                opacity=alpha, 
-                                color_discrete_sequence=PALETTE, 
-                                width=800, height=600)
+
+                # Validate and preprocess the size column
+                plot_data = data.copy()
+                if not pd.api.types.is_numeric_dtype(plot_data[size]):
+                    st.warning(f"Size column '{size}' is not numeric. Size parameter will be ignored.")
+                    size_param = None
+                else:
+                    # Handle NaN and negative values
+                    if plot_data[size].isna().any():
+                        st.warning(f"Size column '{size}' contains NaN values. Dropping rows with NaN in size.")
+                        plot_data = plot_data.dropna(subset=[size])
+                    # Ensure non-negative values
+                    if (plot_data[size] < 0).any():
+                        st.warning(f"Size column '{size}' contains negative values. Converting to absolute values.")
+                        plot_data[size] = plot_data[size].abs()
+                    # Check for low variance
+                    if plot_data[size].std() < 1e-6:
+                        st.warning(f"Size column '{size}' has very low variance. Size differences may not be visible.")
+                    # Normalize size values to improve visibility
+                    size_min, size_max_val = plot_data[size].min(), plot_data[size].max()
+                    if size_max_val > size_min:
+                        plot_data[size] = 10 + 40 * (plot_data[size] - size_min) / (size_max_val - size_min)  # Scale to range [10, 50]
+                    else:
+                        st.warning(f"Size column '{size}' has no variation. All points will have the same size.")
+                    size_param = size
+
+                # Create scatter plot
+                fig = px.scatter(
+                    plot_data,
+                    x=var_x,
+                    y=var_y,
+                    color=hue,
+                    size=size_param,
+                    size_max=size_max,  # Use user-selected size_max
+                    symbol=style if use_style else None,
+                    opacity=alpha,
+                    color_discrete_sequence=PALETTE,
+                    width=800,
+                    height=600
+                )
                 st.plotly_chart(fig, use_container_width=True)
 
             # Catplot
             elif plot_type == 'catplot':
-                x_cols = data.columns if risk_it_all else data.select_dtypes(include='object').columns
-                y_cols = data.columns if risk_it_all else data.select_dtypes(include='object').columns
-                hue_cols = data.columns if risk_it_all else data.select_dtypes(include='object').columns
-                col_cols = data.columns if risk_it_all else data.select_dtypes(include='object').columns
+                x_cols = data.columns if risk_it_all else categorical_cols
+                y_cols = data.columns if risk_it_all else categorical_cols
+                hue_cols = data.columns if risk_it_all else categorical_cols
+                col_cols = data.columns if risk_it_all else categorical_cols
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
                 var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
                 hue = st.sidebar.selectbox("Hue", hue_cols, index=0)
@@ -525,9 +595,9 @@ def plot_data():
 
             # Regression
             elif plot_type == 'regression':
-                x_cols = data.columns if risk_it_all else data.select_dtypes(include='number').columns
-                y_cols = data.columns if risk_it_all else data.select_dtypes(include='number').columns
-                hue_cols = data.columns if risk_it_all else data.select_dtypes(include='object').columns
+                x_cols = data.columns if risk_it_all else numeric_cols
+                y_cols = data.columns if risk_it_all else numeric_cols
+                hue_cols = data.columns if risk_it_all else categorical_cols
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
                 var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
                 hue = st.sidebar.selectbox("Hue", hue_cols, index=0)
@@ -539,10 +609,21 @@ def plot_data():
                                 color_discrete_sequence=PALETTE, width=800, height=600)
                 st.plotly_chart(fig, use_container_width=True)
 
-    # Render the plot
-    render_plot()
+    # Render the plot if data is available
+    if not data.empty:
+        render_plot()
+    else:
+        st.warning("The dataset is empty after preprocessing. Please check your data or selections in the Home section.")
 
-# Main app
+# --- MAIN ROUTING ---
+def main():
+    section = st.sidebar.radio("Select Section", ["Home", "Visualization"])
+
+    if section == "Home":
+        home()
+    elif section == "Visualization":
+        visualization()
+
+# --- Run the app ---
 if __name__ == "__main__":
-    st.title("Interactive Data Visualization App")
-    plot_data()
+    main()
