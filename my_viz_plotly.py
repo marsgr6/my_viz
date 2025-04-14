@@ -15,18 +15,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # Custom CSS to make the plot region wider
-st.markdown(
-    """
-    <style>
-    .main .block-container {
-        max-width: 95%;
-        padding-left: 1rem;
-        padding-right: 1rem;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+st.set_page_config(layout="wide")
 
 def plot_data():
     """Interactive plotting function for exploring a user-uploaded CSV dataset in Streamlit."""
