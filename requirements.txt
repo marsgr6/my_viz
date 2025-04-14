@@ -5,3 +5,4 @@ numpy
 missingno
 plotly
 scipy
+scikit-learn
