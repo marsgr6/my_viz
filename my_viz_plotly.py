@@ -9,6 +9,7 @@ import plotly.figure_factory as ff
 from plotly.subplots import make_subplots
 from scipy.stats import gaussian_kde
 from scipy.cluster import hierarchy
+from sklearn.impute import KNNImputer
 import warnings
 
 # Suppress warnings for cleaner output
@@ -18,7 +19,7 @@ st.set_page_config(layout="wide")
 
 # --- HOME SECTION ---
 def home():
-    st.title("🏠 Home: Data Upload & Selection")
+    st.subheader("🏠 Home: Data Upload & Selection")
 
     uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 
@@ -62,18 +63,98 @@ def home():
         st.session_state["filtered_df"] = df
         st.session_state["numeric_cols"] = numeric_cols
         st.session_state["categorical_cols"] = categorical_cols
+        # Reset imputation state when new data is uploaded
+        if "is_imputed" in st.session_state:
+            del st.session_state["is_imputed"]
+        if "imputed_df" in st.session_state:
+            del st.session_state["imputed_df"]
+
+# --- MISSING DATA IMPUTATION SECTION ---
+def missing_data_imputation():
+    st.subheader("🔄 Missing Data Imputation")
+
+    # Check if filtered data exists
+    if "filtered_df" not in st.session_state:
+        st.warning("Please upload and process a dataset in the Home section first.")
+        return
+
+    # Retrieve filtered data
+    df = st.session_state["filtered_df"]
+    numeric_cols = st.session_state["numeric_cols"]
+    categorical_cols = st.session_state["categorical_cols"]
+
+    # Calculate missing data statistics
+    st.subheader("📉 Missing Data Overview")
+    missing_data = df.isna().sum()
+    missing_percentage = (df.isna().sum() / len(df) * 100).round(2)
+    missing_info = pd.DataFrame({
+        "Column": df.columns,
+        "Missing Values": missing_data,
+        "Percentage Missing (%)": missing_percentage
+    })
+    st.dataframe(missing_info)
+
+    # Check if there are any missing values
+    if missing_data.sum() == 0:
+        st.info("No missing values found in the dataset.")
+        # Ensure is_imputed is False if no imputation is needed
+        st.session_state["is_imputed"] = False
+        return
+
+    # KNN Imputation options
+    st.subheader("🔧 Imputation Settings")
+    impute_button = st.button("Impute Missing Values with KNN Imputer")
+
+    if impute_button:
+        # Separate numeric and categorical data
+        numeric_df = df[numeric_cols].copy()
+        categorical_df = df[categorical_cols].copy()
+
+        # Apply KNN Imputation to numeric columns
+        if numeric_cols:
+            imputer = KNNImputer(n_neighbors=5, weights="uniform", metric="nan_euclidean")
+            imputed_numeric = imputer.fit_transform(numeric_df)
+            imputed_numeric_df = pd.DataFrame(imputed_numeric, columns=numeric_cols, index=numeric_df.index)
+        else:
+            imputed_numeric_df = pd.DataFrame(index=df.index)
+
+        # Combine imputed numeric data with categorical data
+        imputed_df = pd.concat([imputed_numeric_df, categorical_df], axis=1)
+
+        # Ensure column order matches original dataframe
+        imputed_df = imputed_df[df.columns]
+
+        # Store the imputed dataframe in session state
+        st.session_state["imputed_df"] = imputed_df
+        st.session_state["is_imputed"] = True
+
+        st.success("Missing values have been imputed using KNN Imputer!")
+        st.write("📊 Preview of the imputed dataset:")
+        st.dataframe(imputed_df.head())
+
+    # Display current imputation status
+    if "is_imputed" in st.session_state and st.session_state["is_imputed"]:
+        st.info("Currently using imputed dataset for visualization.")
+    else:
+        st.info("Currently using original dataset for visualization. Click the button above to impute missing values.")
 
 # --- VISUALIZATION SECTION ---
 def visualization():
-    st.title("🧪 Visualization: Interactive Data Exploration")
+    st.subheader("🧪 Visualization: Interactive Data Exploration")
 
     # Check if filtered data exists in session state
     if "filtered_df" not in st.session_state:
         st.warning("Please upload and process a dataset in the Home section first.")
         return
 
-    # Retrieve data from session state
-    data = st.session_state["filtered_df"]
+    # Decide which dataset to use based on imputation status
+    if "is_imputed" in st.session_state and st.session_state["is_imputed"]:
+        data = st.session_state["imputed_df"]
+        st.write("Using imputed dataset for visualization.")
+    else:
+        data = st.session_state["filtered_df"]
+        st.write("Using original dataset for visualization.")
+
     numeric_cols = st.session_state["numeric_cols"]
     categorical_cols = st.session_state["categorical_cols"]
 
@@ -530,7 +611,7 @@ def visualization():
                 style = st.sidebar.selectbox("Style", style_cols, index=0)
                 size = st.sidebar.selectbox("Size", size_cols, index=0)
                 alpha = st.sidebar.slider("Alpha", 0.0, 1.0, 0.5, 0.01)
-                size_max = st.sidebar.slider("Max Marker Size", 5, 50, 10, 5)  # New slider for size_max
+                size_max = st.sidebar.slider("Max Marker Size", 10, 100, 50, 5)
                 use_style = st.sidebar.checkbox("Use Style", value=False)
 
                 # Validate and preprocess the size column
@@ -565,7 +646,7 @@ def visualization():
                     y=var_y,
                     color=hue,
                     size=size_param,
-                    size_max=size_max,  # Use user-selected size_max
+                    size_max=size_max,
                     symbol=style if use_style else None,
                     opacity=alpha,
                     color_discrete_sequence=PALETTE,
@@ -617,10 +698,12 @@ def visualization():
 
 # --- MAIN ROUTING ---
 def main():
-    section = st.sidebar.radio("Select Section", ["Home", "Visualization"])
+    section = st.sidebar.radio("Select Section", ["Home", "Missing Data Imputation", "Visualization"])
 
     if section == "Home":
         home()
+    elif section == "Missing Data Imputation":
+        missing_data_imputation()
     elif section == "Visualization":
         visualization()
 
