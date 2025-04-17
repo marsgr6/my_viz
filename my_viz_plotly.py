@@ -49,6 +49,13 @@ def home():
         categorical_cols = st.multiselect("Select categorical variables", options=[col for col in selected_columns if col not in numeric_cols],
                                           default=df.select_dtypes(include='object').columns.tolist())
 
+        # Convert columns to their assigned types
+        for col in numeric_cols:
+            df[col] = pd.to_numeric(df[col], errors='coerce')  # Coerce invalids to NaN
+
+        for col in categorical_cols:
+            df[col] = df[col].astype(str)  # Or 'category' if preferred
+
         # Subsampling
         st.subheader("🧪 Random Subsampling")
         sample_pct = st.slider("Select percentage of data to use", min_value=1, max_value=100, value=100)
@@ -611,7 +618,7 @@ def visualization():
                 style = st.sidebar.selectbox("Style", style_cols, index=0)
                 size = st.sidebar.selectbox("Size", size_cols, index=0)
                 alpha = st.sidebar.slider("Alpha", 0.0, 1.0, 0.5, 0.01)
-                size_max = st.sidebar.slider("Max Marker Size", 10, 100, 50, 5)
+                size_max = st.sidebar.slider("Max Marker Size", 5, 50, 5, 5)
                 use_style = st.sidebar.checkbox("Use Style", value=False)
 
                 # Validate and preprocess the size column
