@@ -80,6 +80,8 @@ def home():
             del st.session_state["is_imputed"]
         if "imputed_df" in st.session_state:
             del st.session_state["imputed_df"]
+        if "working_df" in st.session_state:
+            del st.session_state["working_df"]
 
 # --- MISSING DATA IMPUTATION SECTION ---
 def missing_data_imputation():
@@ -661,34 +663,34 @@ def visualization():
 
             # Scatter
             elif plot_type == 'scatter':
-                import numpy as np  # Make sure numpy is imported
+                import numpy as np
 
                 # Define available columns depending on risk_it_all option
                 x_cols = data.columns if risk_it_all else numeric_cols
                 y_cols = data.columns if risk_it_all else numeric_cols
                 hue_cols = data.columns if risk_it_all else categorical_cols
-                style_cols = data.columns if risk_it_all else categorical_cols
+                style_cols = ['None'] + (data.columns if risk_it_all else categorical_cols)
                 size_cols = data.columns if risk_it_all else numeric_cols
+                facet_cols = ['None'] + (categorical_cols if not risk_it_all else data.columns.tolist())
 
                 # Sidebar selections
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
                 var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
                 hue = st.sidebar.selectbox("Hue (Color)", hue_cols, index=0)
-                style = st.sidebar.selectbox("Style (Symbol)", style_cols, index=0)
+                style = st.sidebar.selectbox("Style (Symbol)", style_cols, index=0)  # <- default None
                 size = st.sidebar.selectbox("Size (Bubble Size)", size_cols, index=0)
+                facet_col = st.sidebar.selectbox("Facet Column", facet_cols, index=0)
+                facet_row = st.sidebar.selectbox("Facet Row", facet_cols, index=0)
 
-                alpha = st.sidebar.slider("Alpha (Opacity)", 0.0, 1.0, 1.0, 0.01)
+                alpha = st.sidebar.slider("Alpha (Opacity)", 0.0, 1.0, 0.8, 0.01)
                 size_max = st.sidebar.slider("Max Marker Size", 5, 100, 10, 5)
-                use_style = st.sidebar.checkbox("Use Style (Symbol by Category)", value=False)
 
-                # New option: Choose size scaling method
                 enhance_size = st.sidebar.selectbox(
                     "Enhance Size Differences",
-                    options=["None", "Square Root", "Min-Max Normalize", "Log1p", "Power 0.3"],
+                    options=["None", "Min-Max Normalize"],
                     index=0
                 )
 
-                # Copy data to avoid modifying original
                 plot_data = data.copy()
 
                 # Size handling
@@ -703,48 +705,43 @@ def visualization():
                         st.warning(f"Size column '{size}' contains negative values. Converting to absolute values.")
                         plot_data[size] = plot_data[size].abs()
 
-                    # Apply selected size enhancement
-                    if enhance_size != "None":
-                        if enhance_size == "Square Root":
-                            plot_data['size_for_plot'] = np.sqrt(plot_data[size])
-                        elif enhance_size == "Min-Max Normalize":
-                            size_min = plot_data[size].min()
-                            size_max_val = plot_data[size].max()
-                            if size_max_val > size_min:
-                                plot_data['size_for_plot'] = 10 + 40 * (plot_data[size] - size_min) / (size_max_val - size_min)
-                            else:
-                                plot_data['size_for_plot'] = 30  # fallback if no variation
-                        elif enhance_size == "Log1p":
-                            plot_data['size_for_plot'] = np.log1p(plot_data[size])
-                        elif enhance_size == "Power 0.3":
-                            plot_data['size_for_plot'] = np.power(plot_data[size], 0.3)
-
+                    if enhance_size == "Min-Max Normalize":
+                        size_min = plot_data[size].min()
+                        size_max_val = plot_data[size].max()
+                        if size_max_val > size_min:
+                            plot_data['size_for_plot'] = 10 + 40 * (plot_data[size] - size_min) / (size_max_val - size_min)
+                        else:
+                            plot_data['size_for_plot'] = 30
                         size_param = 'size_for_plot'
                     else:
                         size_param = size
 
-                # Build the plotting arguments
+                # Build scatter plot arguments
                 scatter_kwargs = dict(
                     data_frame=plot_data,
                     x=var_x,
                     y=var_y,
                     color=hue,
-                    symbol=style if use_style else None,
                     opacity=alpha,
                     color_discrete_sequence=PALETTE,
                     width=800,
                     height=600,
                 )
 
+                if style != 'None':  # <- fix: use symbol only if user selected
+                    scatter_kwargs['symbol'] = style
+
                 if size_param is not None:
                     scatter_kwargs['size'] = size_param
                     scatter_kwargs['size_max'] = size_max
 
-                # Create and display the scatter plot
+                if facet_col != 'None':
+                    scatter_kwargs['facet_col'] = facet_col
+                if facet_row != 'None':
+                    scatter_kwargs['facet_row'] = facet_row
+
                 fig = px.scatter(**scatter_kwargs)
                 st.plotly_chart(fig, use_container_width=True)
-
-
 
             # Catplot
             elif plot_type == 'catplot':
