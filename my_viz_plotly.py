@@ -244,6 +244,7 @@ def visualization():
     def render_plot():
         # Non-interactive plot types
         if plot_type == "correlation":
+            import numpy as np
             data_c = data.drop(data.columns[data.nunique() == 1], axis=1)
             corr_matrix = data_c.select_dtypes(include=np.number).corr()
             fig = px.imshow(corr_matrix, text_auto=True, color_continuous_scale='Viridis', 
@@ -297,6 +298,7 @@ def visualization():
             st.plotly_chart(fig, use_container_width=True)
 
         elif plot_type == "pairplot":
+            import numpy as np
             hue_var = st.sidebar.selectbox("Hue Variable", categorical_cols, index=0)
             numeric_cols_list = list(data.select_dtypes(include='number').columns)
             if not numeric_cols_list:
@@ -417,51 +419,167 @@ def visualization():
             # Bars
             if plot_type == 'bars':
                 x_cols = data.columns if risk_it_all else categorical_cols
-                hue_cols = data.columns if risk_it_all else categorical_cols
+                hue_cols = ['None'] + (data.columns if risk_it_all else categorical_cols)
+
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
-                hue = st.sidebar.selectbox("Hue", hue_cols, index=0)
+                hue = st.sidebar.selectbox("Hue (Color)", hue_cols, index=0)
                 tplot = st.sidebar.selectbox("Plot Type", ["bars", "heatmap"])
+
+                plot_data = data.copy()
+
+                # Force hue to string type if selected
+                if hue != 'None':
+                    plot_data[hue] = plot_data[hue].astype(str)
+
                 if tplot == "bars":
-                    fig = px.histogram(data, x=var_x, color=hue, barmode='group', 
-                                     color_discrete_sequence=PALETTE, width=800, height=600)
+                    if hue != 'None':
+                        fig = px.histogram(
+                            plot_data, x=var_x, color=hue,
+                            barmode='group',
+                            color_discrete_sequence=PALETTE,
+                            width=800, height=600
+                        )
+                    else:
+                        fig = px.histogram(
+                            plot_data, x=var_x,
+                            color_discrete_sequence=PALETTE,
+                            width=800, height=600
+                        )
+
                     fig.update_traces(texttemplate='%{y}', textposition='auto')
-                else:
-                    df_2dhist = pd.DataFrame({
-                        x_label: grp[var_x].value_counts()
-                        for x_label, grp in data.groupby(hue)
-                    }).fillna(0)
-                    fig = px.imshow(df_2dhist, text_auto='.0f', color_continuous_scale='Viridis', 
-                                   title=f"Heatmap: {hue} vs {var_x}", width=800, height=600)
-                    fig.update_xaxes(title=hue)
-                    fig.update_yaxes(title=var_x)
+
+                else:  # heatmap
+                    if hue != 'None':
+                        df_2dhist = pd.DataFrame({
+                            x_label: grp[var_x].value_counts()
+                            for x_label, grp in plot_data.groupby(hue)
+                        }).fillna(0)
+                        fig = px.imshow(
+                            df_2dhist,
+                            text_auto='.0f',
+                            color_continuous_scale='Viridis',
+                            title=f"Heatmap: {hue} vs {var_x}",
+                            width=800,
+                            height=600
+                        )
+                        fig.update_xaxes(title=hue)
+                        fig.update_yaxes(title=var_x)
+                    else:
+                        st.warning("Need a hue variable to generate a heatmap.")
+                        return
+
                 st.plotly_chart(fig, use_container_width=True)
 
             # Boxes
             if plot_type == 'boxes':
+                import numpy as np  # Safe import for swarm
+
                 x_cols = data.columns if risk_it_all else categorical_cols
                 y_cols = data.columns if risk_it_all else numeric_cols
-                hue_cols = data.columns if risk_it_all else categorical_cols
+                hue_cols = ['None'] + (data.columns if risk_it_all else categorical_cols)
+                facet_cols = ['None'] + (categorical_cols if not risk_it_all else data.columns.tolist())
+
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
                 var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
-                hue = st.sidebar.selectbox("Hue", hue_cols, index=0)
+                hue = st.sidebar.selectbox("Hue (Color)", hue_cols, index=0)
+                facet_col = st.sidebar.selectbox("Facet Column", facet_cols, index=0)
+                facet_row = st.sidebar.selectbox("Facet Row", facet_cols, index=0)
                 tplot = st.sidebar.selectbox("Plot Type", ["boxplot", "lineplot", "violin"])
-                no_hue = st.sidebar.checkbox("No Hue", value=False)
-                hue_param = None if (no_hue and not risk_it_all) else hue
+
+                swarm_points = st.sidebar.checkbox("Overlay Swarm of Points", value=False)
+
+                plot_data = data.copy()
+
+                # Base plot arguments
+                plot_kwargs = dict(
+                    data_frame=plot_data,
+                    y=var_y,
+                    color_discrete_sequence=PALETTE,
+                    width=800,
+                    height=600,
+                )
+
+                if var_x != 'None':
+                    plot_kwargs['x'] = var_x
+                if hue != 'None':
+                    plot_kwargs['color'] = hue
+                if facet_col != 'None':
+                    plot_kwargs['facet_col'] = facet_col
+                if facet_row != 'None':
+                    plot_kwargs['facet_row'] = facet_row
+
                 if tplot == "boxplot":
-                    fig = px.box(data, x=var_x, y=var_y, color=hue_param, 
-                                color_discrete_sequence=PALETTE, width=800, height=600)
+                    fig = px.box(**plot_kwargs)
                 elif tplot == "violin":
-                    fig = px.violin(data, x=var_x, y=var_y, color=hue_param, box=True, 
-                                   color_discrete_sequence=PALETTE, width=800, height=600)
+                    fig = px.violin(**plot_kwargs, box=True)
                 elif tplot == "lineplot":
-                    fig = px.line(data.groupby([var_x, hue_param] if hue_param else var_x)[var_y]
-                                 .mean().reset_index(), 
-                                 x=var_x, y=var_y, color=hue_param, 
-                                 color_discrete_sequence=PALETTE, width=800, height=600)
+                    if hue != 'None':
+                        group_cols = [var_x, hue] if var_x != 'None' else [hue]
+                    else:
+                        group_cols = [var_x] if var_x != 'None' else []
+
+                    line_data = plot_data.groupby(group_cols)[var_y].mean().reset_index()
+
+                    line_kwargs = dict(
+                        data_frame=line_data,
+                        y=var_y,
+                        color_discrete_sequence=PALETTE,
+                        width=800,
+                        height=600,
+                    )
+                    if var_x != 'None':
+                        line_kwargs['x'] = var_x
+                    if hue != 'None':
+                        line_kwargs['color'] = hue
+                    if facet_col != 'None':
+                        line_kwargs['facet_col'] = facet_col
+                    if facet_row != 'None':
+                        line_kwargs['facet_row'] = facet_row
+
+                    fig = px.line(**line_kwargs)
+
+                # Optionally add swarm points
+                if swarm_points and tplot in ["boxplot", "violin"]:
+                    import plotly.graph_objects as go
+
+                    unique_hues = plot_data[hue].unique() if hue != 'None' else [None]
+
+                    for i, hue_val in enumerate(unique_hues):
+                        if hue_val is not None:
+                            subset = plot_data[plot_data[hue] == hue_val]
+                        else:
+                            subset = plot_data
+
+                        if var_x != 'None':
+                            x_values = subset[var_x]
+                        else:
+                            x_values = np.full(len(subset), '')  # Empty x axis
+
+                        fig.add_trace(
+                            go.Box(
+                                y=subset[var_y],
+                                x=x_values,
+                                name=str(hue_val) if hue_val is not None else "",
+                                marker=dict(
+                                    color=PALETTE[i % len(PALETTE)],
+                                    size=4,
+                                    opacity=0.6,
+                                    line_width=0
+                                ),
+                                boxpoints="all",
+                                jitter=0.4,
+                                whiskerwidth=0,
+                                fillcolor='rgba(255,255,255,0)',  # Transparent fill
+                                line_color='rgba(255,255,255,0)',  # Transparent borders
+                                showlegend=False
+                            )
+                        )
+
                 st.plotly_chart(fig, use_container_width=True)
 
             # Ridges
             elif plot_type == 'ridges':
+                import numpy as np
                 x_cols = data.columns if risk_it_all else categorical_cols
                 y_cols = data.columns if risk_it_all else numeric_cols
                 hue_cols = data.columns if risk_it_all else categorical_cols
@@ -577,6 +695,7 @@ def visualization():
 
             # Density 1
             elif plot_type == 'density 1':
+                import numpy as np
                 x_cols = data.columns if risk_it_all else numeric_cols
                 hue_cols = data.columns if risk_it_all else categorical_cols
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
@@ -631,6 +750,7 @@ def visualization():
 
             # Density 2
             elif plot_type == 'density 2':
+                import numpy as np
                 x_cols = data.columns if risk_it_all else numeric_cols
                 y_cols = data.columns if risk_it_all else numeric_cols
                 hue_cols = data.columns if risk_it_all else categorical_cols
@@ -664,20 +784,19 @@ def visualization():
             # Scatter
             elif plot_type == 'scatter':
                 import numpy as np
-
                 # Define available columns depending on risk_it_all option
                 x_cols = data.columns if risk_it_all else numeric_cols
                 y_cols = data.columns if risk_it_all else numeric_cols
-                hue_cols = data.columns if risk_it_all else categorical_cols
+                hue_cols = ['None'] + (data.columns if risk_it_all else categorical_cols)
                 style_cols = ['None'] + (data.columns if risk_it_all else categorical_cols)
-                size_cols = data.columns if risk_it_all else numeric_cols
+                size_cols = ['None'] + (data.columns if risk_it_all else numeric_cols)
                 facet_cols = ['None'] + (categorical_cols if not risk_it_all else data.columns.tolist())
 
                 # Sidebar selections
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
                 var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
                 hue = st.sidebar.selectbox("Hue (Color)", hue_cols, index=0)
-                style = st.sidebar.selectbox("Style (Symbol)", style_cols, index=0)  # <- default None
+                style = st.sidebar.selectbox("Style (Symbol)", style_cols, index=0)
                 size = st.sidebar.selectbox("Size (Bubble Size)", size_cols, index=0)
                 facet_col = st.sidebar.selectbox("Facet Column", facet_cols, index=0)
                 facet_row = st.sidebar.selectbox("Facet Row", facet_cols, index=0)
@@ -695,50 +814,56 @@ def visualization():
 
                 # Size handling
                 size_param = None
-                if not pd.api.types.is_numeric_dtype(plot_data[size]):
-                    st.warning(f"Size column '{size}' is not numeric. Size parameter will be ignored.")
-                else:
-                    if plot_data[size].isna().any():
-                        st.warning(f"Size column '{size}' contains NaN values. Dropping rows with NaN in size.")
-                        plot_data = plot_data.dropna(subset=[size])
-                    if (plot_data[size] < 0).any():
-                        st.warning(f"Size column '{size}' contains negative values. Converting to absolute values.")
-                        plot_data[size] = plot_data[size].abs()
-
-                    if enhance_size == "Min-Max Normalize":
-                        size_min = plot_data[size].min()
-                        size_max_val = plot_data[size].max()
-                        if size_max_val > size_min:
-                            plot_data['size_for_plot'] = 10 + 40 * (plot_data[size] - size_min) / (size_max_val - size_min)
-                        else:
-                            plot_data['size_for_plot'] = 30
-                        size_param = 'size_for_plot'
+                if size != 'None':
+                    if not pd.api.types.is_numeric_dtype(plot_data[size]):
+                        st.warning(f"Size column '{size}' is not numeric. Size parameter will be ignored.")
                     else:
-                        size_param = size
+                        if plot_data[size].isna().any():
+                            st.warning(f"Size column '{size}' contains NaN values. Dropping rows with NaN in size.")
+                            plot_data = plot_data.dropna(subset=[size])
+                        if (plot_data[size] < 0).any():
+                            st.warning(f"Size column '{size}' contains negative values. Converting to absolute values.")
+                            plot_data[size] = plot_data[size].abs()
+
+                        if enhance_size == "Min-Max Normalize":
+                            size_min = plot_data[size].min()
+                            size_max_val = plot_data[size].max()
+                            if size_max_val > size_min:
+                                plot_data['size_for_plot'] = 10 + 40 * (plot_data[size] - size_min) / (size_max_val - size_min)
+                            else:
+                                plot_data['size_for_plot'] = 30
+                            size_param = 'size_for_plot'
+                        else:
+                            size_param = size
 
                 # Build scatter plot arguments
                 scatter_kwargs = dict(
                     data_frame=plot_data,
                     x=var_x,
                     y=var_y,
-                    color=hue,
                     opacity=alpha,
                     color_discrete_sequence=PALETTE,
                     width=800,
                     height=600,
                 )
 
-                if style != 'None':  # <- fix: use symbol only if user selected
+                if hue != 'None':
+                    scatter_kwargs['color'] = hue
+                if style != 'None':
                     scatter_kwargs['symbol'] = style
-
-                if size_param is not None:
-                    scatter_kwargs['size'] = size_param
-                    scatter_kwargs['size_max'] = size_max
-
                 if facet_col != 'None':
                     scatter_kwargs['facet_col'] = facet_col
                 if facet_row != 'None':
                     scatter_kwargs['facet_row'] = facet_row
+
+                # Apply size settings
+                if size_param is not None:
+                    scatter_kwargs['size'] = size_param
+                    scatter_kwargs['size_max'] = size_max
+                else:
+                    # No size column selected: fix marker size manually
+                    scatter_kwargs['size'] = np.full(len(plot_data), 1)  # dummy same size
+                    scatter_kwargs['size_max'] = size_max
 
                 fig = px.scatter(**scatter_kwargs)
                 st.plotly_chart(fig, use_container_width=True)
