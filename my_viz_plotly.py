@@ -24,7 +24,11 @@ def home():
     uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 
     if uploaded_file:
-        df = pd.read_csv(uploaded_file)
+        # Define common missing value representations
+        na_values = ['', 'NA', 'N/A', 'na', 'n/a', 'NaN', 'nan', 'NULL', 'null', 'missing', '-', '--']
+
+        # Read CSV with specified missing values
+        df = pd.read_csv(uploaded_file, na_values=na_values, keep_default_na=True)
         st.success("File successfully uploaded!")
 
         # Display column info
@@ -32,7 +36,8 @@ def home():
         col_info = pd.DataFrame({
             "Column": df.columns,
             "Type": [df[col].dtype for col in df.columns],
-            "Unique Values": [df[col].nunique() for col in df.columns]
+            "Unique Values": [df[col].nunique(dropna=True) for col in df.columns],
+            "Missing Values": [df[col].isna().sum() for col in df.columns]
         })
         st.dataframe(col_info)
 
@@ -54,7 +59,7 @@ def home():
             df[col] = pd.to_numeric(df[col], errors='coerce')  # Coerce invalids to NaN
 
         for col in categorical_cols:
-            df[col] = df[col].astype(str)  # Or 'category' if preferred
+            df[col] = df[col].astype(str).replace('nan', np.nan)  # Convert to string, preserve NaN
 
         # Subsampling
         st.subheader("🧪 Random Subsampling")
@@ -86,14 +91,24 @@ def missing_data_imputation():
         return
 
     # Retrieve filtered data
-    df = st.session_state["filtered_df"]
-    numeric_cols = st.session_state["numeric_cols"]
-    categorical_cols = st.session_state["categorical_cols"]
+    if "working_df" not in st.session_state:
+        st.session_state["working_df"] = st.session_state["filtered_df"].copy()
+
+    df = st.session_state["working_df"]
+
+    # Standardize None values to np.nan
+    df = df.applymap(lambda x: np.nan if x is None else x)
+
+    # Update working copy after standardization
+    st.session_state["working_df"] = df
+
+    numeric_cols = df.select_dtypes(include=["float64", "int64"]).columns.tolist()
+    categorical_cols = df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
 
     # Calculate missing data statistics
     st.subheader("📉 Missing Data Overview")
     missing_data = df.isna().sum()
-    missing_percentage = (df.isna().sum() / len(df) * 100).round(2)
+    missing_percentage = (missing_data / len(df) * 100).round(2)
     missing_info = pd.DataFrame({
         "Column": df.columns,
         "Missing Values": missing_data,
@@ -104,20 +119,47 @@ def missing_data_imputation():
     # Check if there are any missing values
     if missing_data.sum() == 0:
         st.info("No missing values found in the dataset.")
-        # Ensure is_imputed is False if no imputation is needed
         st.session_state["is_imputed"] = False
         return
 
+    # Remove rows with NaN (button)
+    st.subheader("🧹 Data Cleaning Options")
+    remove_nan_button = st.button("Remove Rows with Any Missing Values")
+
+    if remove_nan_button:
+        original_rows = df.shape[0]
+        df = df.dropna()
+        st.session_state["working_df"] = df  # Update working data
+        st.success(f"Removed rows with missing values! {original_rows - df.shape[0]} rows dropped. New size: {df.shape[0]} rows.")
+
+        # Recalculate missing info after removal
+        missing_data = df.isna().sum()
+        missing_percentage = (missing_data / len(df) * 100).round(2)
+        missing_info = pd.DataFrame({
+            "Column": df.columns,
+            "Missing Values": missing_data,
+            "Percentage Missing (%)": missing_percentage
+        })
+        st.dataframe(missing_info)
+
+        if missing_data.sum() == 0:
+            st.info("No missing values left after removal.")
+            st.session_state["is_imputed"] = False
+            return
+
     # KNN Imputation options
     st.subheader("🔧 Imputation Settings")
-    impute_button = st.button("Impute Missing Values with KNN Imputer")
+    impute_button = st.button("Impute Missing Values with KNN Imputer (Numeric) and Mode (Categorical)")
 
     if impute_button:
-        # Separate numeric and categorical data
+        # Separate numeric and categorical data again
+        numeric_cols = df.select_dtypes(include=["float64", "int64"]).columns.tolist()
+        categorical_cols = df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
+
         numeric_df = df[numeric_cols].copy()
         categorical_df = df[categorical_cols].copy()
 
-        # Apply KNN Imputation to numeric columns
+        # 1. Numeric Columns: KNN Imputation
         if numeric_cols:
             imputer = KNNImputer(n_neighbors=5, weights="uniform", metric="nan_euclidean")
             imputed_numeric = imputer.fit_transform(numeric_df)
@@ -125,8 +167,16 @@ def missing_data_imputation():
         else:
             imputed_numeric_df = pd.DataFrame(index=df.index)
 
+        # 2. Categorical Columns: Mode Imputation
+        if categorical_cols:
+            for col in categorical_cols:
+                most_frequent = categorical_df[col].mode()
+                if not most_frequent.empty:
+                    categorical_df[col].fillna(most_frequent[0], inplace=True)
+        imputed_categorical_df = categorical_df
+
         # Combine imputed numeric data with categorical data
-        imputed_df = pd.concat([imputed_numeric_df, categorical_df], axis=1)
+        imputed_df = pd.concat([imputed_numeric_df, imputed_categorical_df], axis=1)
 
         # Ensure column order matches original dataframe
         imputed_df = imputed_df[df.columns]
@@ -135,7 +185,7 @@ def missing_data_imputation():
         st.session_state["imputed_df"] = imputed_df
         st.session_state["is_imputed"] = True
 
-        st.success("Missing values have been imputed using KNN Imputer!")
+        st.success("Missing values have been imputed!")
         st.write("📊 Preview of the imputed dataset:")
         st.dataframe(imputed_df.head())
 
@@ -157,10 +207,14 @@ def visualization():
     # Decide which dataset to use based on imputation status
     if "is_imputed" in st.session_state and st.session_state["is_imputed"]:
         data = st.session_state["imputed_df"]
-        st.write("Using imputed dataset for visualization.")
+        st.success("Using imputed dataset for visualization.")
+    elif "working_df" in st.session_state:
+        data = st.session_state["working_df"]
+        st.info("Using cleaned dataset (after removing NaNs) for visualization.")
     else:
         data = st.session_state["filtered_df"]
-        st.write("Using original dataset for visualization.")
+        st.info("Using original uploaded dataset for visualization.")
+
 
     numeric_cols = st.session_state["numeric_cols"]
     categorical_cols = st.session_state["categorical_cols"]
@@ -607,60 +661,90 @@ def visualization():
 
             # Scatter
             elif plot_type == 'scatter':
+                import numpy as np  # Make sure numpy is imported
+
+                # Define available columns depending on risk_it_all option
                 x_cols = data.columns if risk_it_all else numeric_cols
                 y_cols = data.columns if risk_it_all else numeric_cols
                 hue_cols = data.columns if risk_it_all else categorical_cols
                 style_cols = data.columns if risk_it_all else categorical_cols
                 size_cols = data.columns if risk_it_all else numeric_cols
+
+                # Sidebar selections
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
                 var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
-                hue = st.sidebar.selectbox("Hue", hue_cols, index=0)
-                style = st.sidebar.selectbox("Style", style_cols, index=0)
-                size = st.sidebar.selectbox("Size", size_cols, index=0)
-                alpha = st.sidebar.slider("Alpha", 0.0, 1.0, 0.5, 0.01)
-                size_max = st.sidebar.slider("Max Marker Size", 5, 50, 5, 5)
-                use_style = st.sidebar.checkbox("Use Style", value=False)
+                hue = st.sidebar.selectbox("Hue (Color)", hue_cols, index=0)
+                style = st.sidebar.selectbox("Style (Symbol)", style_cols, index=0)
+                size = st.sidebar.selectbox("Size (Bubble Size)", size_cols, index=0)
 
-                # Validate and preprocess the size column
+                alpha = st.sidebar.slider("Alpha (Opacity)", 0.0, 1.0, 1.0, 0.01)
+                size_max = st.sidebar.slider("Max Marker Size", 5, 100, 10, 5)
+                use_style = st.sidebar.checkbox("Use Style (Symbol by Category)", value=False)
+
+                # New option: Choose size scaling method
+                enhance_size = st.sidebar.selectbox(
+                    "Enhance Size Differences",
+                    options=["None", "Square Root", "Min-Max Normalize", "Log1p", "Power 0.3"],
+                    index=0
+                )
+
+                # Copy data to avoid modifying original
                 plot_data = data.copy()
+
+                # Size handling
+                size_param = None
                 if not pd.api.types.is_numeric_dtype(plot_data[size]):
                     st.warning(f"Size column '{size}' is not numeric. Size parameter will be ignored.")
-                    size_param = None
                 else:
-                    # Handle NaN and negative values
                     if plot_data[size].isna().any():
                         st.warning(f"Size column '{size}' contains NaN values. Dropping rows with NaN in size.")
                         plot_data = plot_data.dropna(subset=[size])
-                    # Ensure non-negative values
                     if (plot_data[size] < 0).any():
                         st.warning(f"Size column '{size}' contains negative values. Converting to absolute values.")
                         plot_data[size] = plot_data[size].abs()
-                    # Check for low variance
-                    if plot_data[size].std() < 1e-6:
-                        st.warning(f"Size column '{size}' has very low variance. Size differences may not be visible.")
-                    # Normalize size values to improve visibility
-                    size_min, size_max_val = plot_data[size].min(), plot_data[size].max()
-                    if size_max_val > size_min:
-                        plot_data[size] = 10 + 40 * (plot_data[size] - size_min) / (size_max_val - size_min)  # Scale to range [10, 50]
-                    else:
-                        st.warning(f"Size column '{size}' has no variation. All points will have the same size.")
-                    size_param = size
 
-                # Create scatter plot
-                fig = px.scatter(
-                    plot_data,
+                    # Apply selected size enhancement
+                    if enhance_size != "None":
+                        if enhance_size == "Square Root":
+                            plot_data['size_for_plot'] = np.sqrt(plot_data[size])
+                        elif enhance_size == "Min-Max Normalize":
+                            size_min = plot_data[size].min()
+                            size_max_val = plot_data[size].max()
+                            if size_max_val > size_min:
+                                plot_data['size_for_plot'] = 10 + 40 * (plot_data[size] - size_min) / (size_max_val - size_min)
+                            else:
+                                plot_data['size_for_plot'] = 30  # fallback if no variation
+                        elif enhance_size == "Log1p":
+                            plot_data['size_for_plot'] = np.log1p(plot_data[size])
+                        elif enhance_size == "Power 0.3":
+                            plot_data['size_for_plot'] = np.power(plot_data[size], 0.3)
+
+                        size_param = 'size_for_plot'
+                    else:
+                        size_param = size
+
+                # Build the plotting arguments
+                scatter_kwargs = dict(
+                    data_frame=plot_data,
                     x=var_x,
                     y=var_y,
                     color=hue,
-                    size=size_param,
-                    size_max=size_max,
                     symbol=style if use_style else None,
                     opacity=alpha,
                     color_discrete_sequence=PALETTE,
                     width=800,
-                    height=600
+                    height=600,
                 )
+
+                if size_param is not None:
+                    scatter_kwargs['size'] = size_param
+                    scatter_kwargs['size_max'] = size_max
+
+                # Create and display the scatter plot
+                fig = px.scatter(**scatter_kwargs)
                 st.plotly_chart(fig, use_container_width=True)
+
+
 
             # Catplot
             elif plot_type == 'catplot':
