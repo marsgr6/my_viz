@@ -418,42 +418,104 @@ def visualization():
         else:
             # Bars
             if plot_type == 'bars':
-                x_cols = data.columns if risk_it_all else categorical_cols
-                hue_cols = ['None'] + (data.columns if risk_it_all else categorical_cols)
+                if categorical_cols:
+                    x_cols =  data.columns.tolist() if risk_it_all else categorical_cols
+                else:
+                    x_cols = numeric_cols
 
-                var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
-                hue = st.sidebar.selectbox("Hue (Color)", hue_cols, index=0)
+                # Safe column lists
+                hue_cols = [None] + (data.columns.tolist() if risk_it_all else categorical_cols)
+
+                var_x = st.sidebar.selectbox(
+                    "X Variable", x_cols, index=0,
+                    format_func=lambda x: "None" if x is None else x
+                )
+                hue = st.sidebar.selectbox(
+                    "Hue (Color)", hue_cols, index=0,
+                    format_func=lambda x: "None" if x is None else x
+                )
+
                 tplot = st.sidebar.selectbox("Plot Type", ["bars", "heatmap"])
+                bar_mode = st.sidebar.selectbox("Bars Mode", ["Histogram", "Raw Values (height = value in order)"])
+
+                # --- NEW --- Time is here!
+                time_mode = st.sidebar.checkbox("Time is here! (Index X, Select Y)", value=False)
+                if time_mode:
+                    y_cols = data.columns.tolist()
+                    var_y = st.sidebar.selectbox("Y Variable (for Raw Values)", y_cols, index=0)
 
                 plot_data = data.copy()
 
-                # Force hue to string type if selected
-                if hue != 'None':
+                # Force Hue column to string if selected
+                if hue is not None:
                     plot_data[hue] = plot_data[hue].astype(str)
 
                 if tplot == "bars":
-                    if hue != 'None':
-                        fig = px.histogram(
-                            plot_data, x=var_x, color=hue,
-                            barmode='group',
-                            color_discrete_sequence=PALETTE,
-                            width=800, height=600
-                        )
-                    else:
-                        fig = px.histogram(
-                            plot_data, x=var_x,
-                            color_discrete_sequence=PALETTE,
-                            width=800, height=600
-                        )
+                    if bar_mode == "Histogram" and not time_mode:
+                        if hue is not None:
+                            fig = px.histogram(
+                                plot_data,
+                                x=var_x,
+                                color=hue,
+                                barmode='group',
+                                color_discrete_sequence=PALETTE,
+                                width=800,
+                                height=600
+                            )
+                        else:
+                            fig = px.histogram(
+                                plot_data,
+                                x=var_x,
+                                color_discrete_sequence=PALETTE,
+                                width=800,
+                                height=600
+                            )
+                        fig.update_traces(texttemplate='%{y}', textposition='auto')
 
-                    fig.update_traces(texttemplate='%{y}', textposition='auto')
+                    else:  # Raw Values mode or Time Mode
+                        df_plot = plot_data.reset_index()
+
+                        if time_mode:
+                            x_axis = var_x
+                            y_axis = var_y
+                        else:
+                            x_axis = 'index'
+                            y_axis = var_x
+
+                        if y_axis is None:
+                            st.warning("Please select a variable for Y-axis.")
+                            return
+
+                        if hue is not None:
+                            fig = px.bar(
+                                df_plot,
+                                x=x_axis,
+                                y=y_axis,
+                                color=hue,
+                                color_discrete_sequence=PALETTE,
+                                width=800,
+                                height=600
+                            )
+                        else:
+                            fig = px.bar(
+                                df_plot,
+                                x=x_axis,
+                                y=y_axis,
+                                color_discrete_sequence=PALETTE,
+                                width=800,
+                                height=600
+                            )
+                        fig.update_layout(xaxis_title="Index", yaxis_title=y_axis)
 
                 else:  # heatmap
-                    if hue != 'None':
-                        df_2dhist = pd.DataFrame({
-                            x_label: grp[var_x].value_counts()
-                            for x_label, grp in plot_data.groupby(hue)
-                        }).fillna(0)
+                    if hue is not None and var_x is not None:
+                        if pd.api.types.is_numeric_dtype(plot_data[var_x]):
+                            plot_data[var_x] = pd.cut(plot_data[var_x], bins=10)
+                        if pd.api.types.is_numeric_dtype(plot_data[hue]):
+                            plot_data[hue] = pd.cut(plot_data[hue], bins=10)
+
+                        df_2dhist = pd.crosstab(plot_data[var_x], plot_data[hue])
+
                         fig = px.imshow(
                             df_2dhist,
                             text_auto='.0f',
@@ -465,7 +527,7 @@ def visualization():
                         fig.update_xaxes(title=hue)
                         fig.update_yaxes(title=var_x)
                     else:
-                        st.warning("Need a hue variable to generate a heatmap.")
+                        st.warning("You must select both X and Hue variables to create a heatmap.")
                         return
 
                 st.plotly_chart(fig, use_container_width=True)
@@ -553,24 +615,21 @@ def visualization():
                         if var_x != 'None':
                             x_values = subset[var_x]
                         else:
-                            x_values = np.full(len(subset), '')  # Empty x axis
+                            x_values = np.zeros(len(subset))  # Center at 0 if no x
 
+                        # Add scatter points as swarm
                         fig.add_trace(
-                            go.Box(
-                                y=subset[var_y],
+                            go.Scatter(
                                 x=x_values,
-                                name=str(hue_val) if hue_val is not None else "",
+                                y=subset[var_y],
+                                mode='markers',
                                 marker=dict(
                                     color=PALETTE[i % len(PALETTE)],
-                                    size=4,
+                                    size=5,
                                     opacity=0.6,
-                                    line_width=0
+                                    line=dict(width=0)
                                 ),
-                                boxpoints="all",
-                                jitter=0.4,
-                                whiskerwidth=0,
-                                fillcolor='rgba(255,255,255,0)',  # Transparent fill
-                                line_color='rgba(255,255,255,0)',  # Transparent borders
+                                name=str(hue_val) if hue_val is not None else "",
                                 showlegend=False
                             )
                         )
