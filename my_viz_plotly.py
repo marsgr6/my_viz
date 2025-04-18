@@ -24,64 +24,131 @@ def home():
     uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 
     if uploaded_file:
-        # Define common missing value representations
+        # Define missing value representations
         na_values = ['', 'NA', 'N/A', 'na', 'n/a', 'NaN', 'nan', 'NULL', 'null', 'missing', '-', '--']
 
-        # Read CSV with specified missing values
-        df = pd.read_csv(uploaded_file, na_values=na_values, keep_default_na=True)
-        st.success("File successfully uploaded!")
+        # --- Always reset the session when uploading a new file ---
+        if "last_uploaded_file" not in st.session_state or uploaded_file.name != st.session_state["last_uploaded_file"]:
+            st.session_state.clear()
+            st.session_state["last_uploaded_file"] = uploaded_file.name
 
-        # Display column info
-        st.subheader("🔍 Column Overview")
-        col_info = pd.DataFrame({
-            "Column": df.columns,
-            "Type": [df[col].dtype for col in df.columns],
-            "Unique Values": [df[col].nunique(dropna=True) for col in df.columns],
-            "Missing Values": [df[col].isna().sum() for col in df.columns]
-        })
-        st.dataframe(col_info)
+        # Read file
+        raw_df = pd.read_csv(uploaded_file, na_values=na_values, keep_default_na=True)
+        st.success(f"File '{uploaded_file.name}' successfully uploaded!")
 
-        # Column selection
+        # Set working copy
+        st.session_state["working_df"] = raw_df.copy()
+        df = st.session_state["working_df"]
+
+        # --- Column Selection ---
+        st.subheader("🎯 Column Selection")
         selected_columns = st.multiselect(
-            "Select columns to keep", options=df.columns, default=df.columns.tolist()
+            "Select columns to keep", options=df.columns.tolist(), default=df.columns.tolist()
         )
         df = df[selected_columns]
 
-        # Manual type assignment
+        # --- Variable Types ---
         st.subheader("🔧 Assign Variable Types")
-        numeric_cols = st.multiselect("Select numeric variables", options=selected_columns,
-                                      default=df.select_dtypes(include='number').columns.tolist())
-        categorical_cols = st.multiselect("Select categorical variables", options=[col for col in selected_columns if col not in numeric_cols],
-                                          default=df.select_dtypes(include='object').columns.tolist())
+        numeric_cols = st.multiselect(
+            "Select Numeric Variables",
+            options=df.columns.tolist(),
+            default=df.select_dtypes(include="number").columns.tolist()
+        )
+        categorical_cols = st.multiselect(
+            "Select Categorical Variables",
+            options=[col for col in df.columns if col not in numeric_cols],
+            default=df.select_dtypes(include=["object", "category"]).columns.tolist()
+        )
 
-        # Convert columns to their assigned types
+        # Force type casting
         for col in numeric_cols:
-            df[col] = pd.to_numeric(df[col], errors='coerce')  # Coerce invalids to NaN
-
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
         for col in categorical_cols:
-            df[col] = df[col].astype(str).replace('nan', np.nan)  # Convert to string, preserve NaN
+            if col in df.columns:
+                df[col] = df[col].astype(str).replace('nan', np.nan)
 
-        # Subsampling
+        # --- Random Subsampling ---
         st.subheader("🧪 Random Subsampling")
-        sample_pct = st.slider("Select percentage of data to use", min_value=1, max_value=100, value=100)
+        sample_pct = st.slider(
+            "Select percentage of data to use", min_value=1, max_value=100, value=100
+        )
         if sample_pct < 100:
             df = df.sample(frac=sample_pct / 100, random_state=42)
-            st.info(f"Dataset has been subsampled to {len(df)} rows.")
+            st.info(f"Dataset subsampled to {len(df)} rows.")
 
-        st.write("📊 Preview of the filtered dataset:")
-        st.dataframe(df.head())
+        # Update working df after basic processing
+        st.session_state["working_df"] = df.copy()
 
-        # Save filtered info in session state
-        st.session_state["filtered_df"] = df
-        st.session_state["numeric_cols"] = numeric_cols
-        st.session_state["categorical_cols"] = categorical_cols
-        # Reset imputation state when new data is uploaded
-        if "is_imputed" in st.session_state:
-            del st.session_state["is_imputed"]
-        if "imputed_df" in st.session_state:
-            del st.session_state["imputed_df"]
-        if "working_df" in st.session_state:
-            del st.session_state["working_df"]
+        # --- Melting Section ---
+        st.subheader("🔥 Optional: Melt Data")
+        id_vars = st.multiselect(
+            "Select ID Variables for Melting", options=df.columns.tolist(), key="melt_keys"
+        )
+        if st.button("Apply Melting"):
+            if id_vars:
+                value_vars = [col for col in df.columns if col not in id_vars]
+                df = pd.melt(
+                    df, id_vars=id_vars, value_vars=value_vars,
+                    var_name="variable", value_name="value"
+                )
+                st.session_state["working_df"] = df.copy()
+                st.success("Melting applied successfully!")
+            else:
+                st.warning("Please select at least one ID variable before melting.")
+
+        # --- Date Feature Engineering ---
+        st.subheader("📅 Date Feature Engineering (Optional)")
+
+        date_column = st.selectbox(
+            "Select Date Column to Extract Features (optional)", 
+            options=["None"] + df.columns.tolist(), 
+            index=0
+        )
+
+        dayfirst_option = st.checkbox("Use Day First when Parsing Dates (e.g., 31/12/2023)", value=True)
+
+        parse_date_button = st.button("Parse Date and Create Features")
+
+        if parse_date_button and date_column != "None":
+            try:
+                df[date_column] = pd.to_datetime(df[date_column], errors="coerce", dayfirst=dayfirst_option)
+
+                df["Year"] = df[date_column].dt.year
+                df["Month"] = df[date_column].dt.month
+                df["Day"] = df[date_column].dt.day
+                df["DayOfWeek"] = df[date_column].dt.dayofweek
+                df["Hour"] = df[date_column].dt.hour
+                df[date_column] = df[date_column].astype(str)
+
+                st.session_state["working_df"] = df
+                st.success("✅ Date features extracted successfully!")
+            except Exception as e:
+                st.warning(f"⚠️ Could not parse the selected column as datetime: {e}")
+
+        # --- Final Data Preview ---
+        st.subheader("📊 Preview of the Processed Dataset")
+        st.dataframe(st.session_state["working_df"].head())
+
+        # --- Save to Session State ---
+        st.session_state["filtered_df"] = st.session_state["working_df"]
+        st.session_state["numeric_cols"] = st.session_state["filtered_df"].select_dtypes(include="number").columns.tolist()
+        st.session_state["categorical_cols"] = st.session_state["filtered_df"].select_dtypes(include=["object", "category"]).columns.tolist()
+
+        # Reset imputation flags
+        for flag in ["is_imputed", "imputed_df"]:
+            if flag in st.session_state:
+                del st.session_state[flag]
+
+        # --- Download Section ---
+        st.subheader("💾 Download Processed Data")
+        csv = st.session_state["filtered_df"].to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download Processed Data as CSV",
+            data=csv,
+            file_name="processed_dataset.csv",
+            mime="text/csv"
+        )
 
 # --- MISSING DATA IMPUTATION SECTION ---
 def missing_data_imputation():
@@ -596,11 +663,12 @@ def visualization():
 
             # Boxes
             if plot_type == 'boxes':
-                import numpy as np  # Safe import for swarm
+                import numpy as np
+                import plotly.graph_objects as go
 
                 x_cols = data.columns if risk_it_all else categorical_cols
                 y_cols = data.columns if risk_it_all else numeric_cols
-                hue_cols = ['None'] + (data.columns if risk_it_all else categorical_cols)
+                hue_cols = ['None'] + (data.columns.tolist() if risk_it_all else categorical_cols)
                 facet_cols = ['None'] + (categorical_cols if not risk_it_all else data.columns.tolist())
 
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
@@ -611,6 +679,7 @@ def visualization():
                 tplot = st.sidebar.selectbox("Plot Type", ["boxplot", "lineplot", "violin"])
 
                 swarm_points = st.sidebar.checkbox("Overlay Swarm of Points", value=False)
+                band_interval = st.sidebar.checkbox("Show Band in Lineplot (±1 std)", value=False)
 
                 plot_data = data.copy()
 
@@ -637,49 +706,47 @@ def visualization():
                 elif tplot == "violin":
                     fig = px.violin(**plot_kwargs, box=True)
                 elif tplot == "lineplot":
-                    if hue != 'None':
-                        group_cols = [var_x, hue] if var_x != 'None' else [hue]
-                    else:
-                        group_cols = [var_x] if var_x != 'None' else []
+                    # Always group only by var_x
+                    grouped = plot_data.groupby(var_x)[var_y].agg(['mean', 'std']).reset_index()
 
-                    line_data = plot_data.groupby(group_cols)[var_y].mean().reset_index()
+                    fig = go.Figure()
 
-                    line_kwargs = dict(
-                        data_frame=line_data,
-                        y=var_y,
-                        color_discrete_sequence=PALETTE,
+                    fig.add_trace(go.Scatter(
+                        x=grouped[var_x],
+                        y=grouped['mean'],
+                        mode='lines',
+                        name=f'Mean {var_y}',
+                        line=dict(color='blue'),
+                    ))
+
+                    if band_interval:
+                        fig.add_trace(go.Scatter(
+                            x=list(grouped[var_x]) + list(grouped[var_x])[::-1],
+                            y=list(grouped['mean'] + grouped['std']) + list(grouped['mean'] - grouped['std'])[::-1],
+                            fill='toself',
+                            fillcolor='rgba(0,100,80,0.2)',
+                            line=dict(color='rgba(255,255,255,0)'),
+                            hoverinfo="skip",
+                            showlegend=False,
+                            name=f'±1 std band'
+                        ))
+
+                    fig.update_layout(
                         width=800,
                         height=600,
+                        title=f'Lineplot of {var_y} vs {var_x}',
+                        xaxis_title=var_x,
+                        yaxis_title=var_y,
                     )
-                    if var_x != 'None':
-                        line_kwargs['x'] = var_x
-                    if hue != 'None':
-                        line_kwargs['color'] = hue
-                    if facet_col != 'None':
-                        line_kwargs['facet_col'] = facet_col
-                    if facet_row != 'None':
-                        line_kwargs['facet_row'] = facet_row
 
-                    fig = px.line(**line_kwargs)
-
-                # Optionally add swarm points
+                # Optionally add swarm points for boxplot/violin
                 if swarm_points and tplot in ["boxplot", "violin"]:
-                    import plotly.graph_objects as go
-
                     unique_hues = plot_data[hue].unique() if hue != 'None' else [None]
 
                     for i, hue_val in enumerate(unique_hues):
-                        if hue_val is not None:
-                            subset = plot_data[plot_data[hue] == hue_val]
-                        else:
-                            subset = plot_data
+                        subset = plot_data[plot_data[hue] == hue_val] if hue_val is not None else plot_data
+                        x_values = subset[var_x] if var_x != 'None' else np.zeros(len(subset))
 
-                        if var_x != 'None':
-                            x_values = subset[var_x]
-                        else:
-                            x_values = np.zeros(len(subset))  # Center at 0 if no x
-
-                        # Add scatter points as swarm
                         fig.add_trace(
                             go.Scatter(
                                 x=x_values,
@@ -982,9 +1049,9 @@ def visualization():
                 # Define available columns depending on risk_it_all option
                 x_cols = data.columns if risk_it_all else numeric_cols
                 y_cols = data.columns if risk_it_all else numeric_cols
-                hue_cols = ['None'] + (data.columns if risk_it_all else categorical_cols)
-                style_cols = ['None'] + (data.columns if risk_it_all else categorical_cols)
-                size_cols = ['None'] + (data.columns if risk_it_all else numeric_cols)
+                hue_cols = ['None'] + (data.columns.tolist() if risk_it_all else categorical_cols)
+                style_cols = ['None'] + (data.columns.tolist() if risk_it_all else categorical_cols)
+                size_cols = ['None'] + (data.columns.tolist() if risk_it_all else numeric_cols)
                 facet_cols = ['None'] + (categorical_cols if not risk_it_all else data.columns.tolist())
 
                 # Sidebar selections
