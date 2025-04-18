@@ -321,6 +321,8 @@ def visualization():
         if plot_type == "correlation":
             import numpy as np
             import plotly.graph_objects as go
+            import plotly.express as px
+
             data_c = data.drop(data.columns[data.nunique() == 1], axis=1)
             corr_matrix = data_c.select_dtypes(include=np.number).corr()
             fig = px.imshow(corr_matrix, text_auto=True, color_continuous_scale='Viridis', 
@@ -330,6 +332,7 @@ def visualization():
         elif plot_type == "clustermap":
             import numpy as np
             import plotly.graph_objects as go
+
             z_score = st.sidebar.selectbox("Z-Score", [None, 0, 1], index=0)
             standard_scale = st.sidebar.selectbox("Standard Scale", [None, 0, 1], index=0)
             data_c = data.drop(data.columns[data.nunique() == 1], axis=1)
@@ -379,7 +382,11 @@ def visualization():
         # pairplot
         elif plot_type == "pairplot":
             import numpy as np
+            import plotly.express as px
             import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
+            from scipy.stats import gaussian_kde
+
 
             numeric_cols_list = list(data.select_dtypes(include='number').columns)
             cat_cols = list(data.select_dtypes(include=['object', 'category', 'bool']).columns)
@@ -547,6 +554,8 @@ def visualization():
         else:
             # Bars
             if plot_type == 'bars':
+                import plotly.express as px
+                import plotly.graph_objects as go
                 if categorical_cols:
                     x_cols =  data.columns.tolist() if risk_it_all else categorical_cols
                 else:
@@ -579,8 +588,39 @@ def visualization():
                 if hue is not None:
                     plot_data[hue] = plot_data[hue].astype(str)
 
+                # Let the user specify the order for var_x if it is categorical
+                if var_x in plot_data.columns and plot_data[var_x].dtype.name in ['object', 'category']:
+                    custom_order_x = st.sidebar.multiselect(
+                        f"Custom Order for x {var_x}",
+                        options=plot_data[var_x].dropna().unique().tolist(),
+                        default=sorted(plot_data[var_x].dropna().unique().tolist())
+                    )
+                    plot_data[var_x] = pd.Categorical(plot_data[var_x], categories=custom_order_x, ordered=True)
+                else:
+                    custom_order_x = None
+
+                # Let the user specify the order for hue if it is categorical
+                if hue != 'None' and hue in plot_data.columns and plot_data[hue].dtype.name in ['object', 'category']:
+                    custom_order_hue = st.sidebar.multiselect(
+                        f"Custom Order for hue {hue}",
+                        options=plot_data[hue].dropna().unique().tolist(),
+                        default=sorted(plot_data[hue].dropna().unique().tolist())
+                    )
+                    plot_data[hue] = pd.Categorical(plot_data[hue], categories=custom_order_hue, ordered=True)
+                else:
+                    custom_order_hue = None
+
+                category_orders = {}
+
+                if custom_order_x is not None:
+                    category_orders[var_x] = custom_order_x
+
+                if custom_order_hue is not None:
+                    category_orders[hue] = custom_order_hue
+
                 if tplot == "bars":
                     if bar_mode == "Histogram" and not time_mode:
+
                         if hue is not None:
                             fig = px.histogram(
                                 plot_data,
@@ -589,7 +629,8 @@ def visualization():
                                 barmode='group',
                                 color_discrete_sequence=PALETTE,
                                 width=800,
-                                height=600
+                                height=600,
+                                category_orders=category_orders
                             )
                         else:
                             fig = px.histogram(
@@ -597,7 +638,8 @@ def visualization():
                                 x=var_x,
                                 color_discrete_sequence=PALETTE,
                                 width=800,
-                                height=600
+                                height=600,
+                                category_orders=category_orders
                             )
                         fig.update_traces(texttemplate='%{y}', textposition='auto')
 
@@ -623,7 +665,8 @@ def visualization():
                                 color=hue,
                                 color_discrete_sequence=PALETTE,
                                 width=800,
-                                height=600
+                                height=600,
+                                category_orders=category_orders
                             )
                         else:
                             fig = px.bar(
@@ -632,7 +675,8 @@ def visualization():
                                 y=y_axis,
                                 color_discrete_sequence=PALETTE,
                                 width=800,
-                                height=600
+                                height=600,
+                                category_orders=category_orders
                             )
                         fig.update_layout(xaxis_title="Index", yaxis_title=y_axis)
 
@@ -664,6 +708,7 @@ def visualization():
             # Boxes
             if plot_type == 'boxes':
                 import numpy as np
+                import plotly.express as px
                 import plotly.graph_objects as go
 
                 x_cols = data.columns if risk_it_all else categorical_cols
@@ -681,36 +726,83 @@ def visualization():
                 swarm_points = st.sidebar.checkbox("Overlay Swarm of Points", value=False)
                 band_interval = st.sidebar.checkbox("Show Band in Lineplot (±1 std)", value=False)
 
+                # Fix None values
+                hue_used = None if hue == 'None' else hue
+                facet_col_used = None if facet_col == 'None' else facet_col
+                facet_row_used = None if facet_row == 'None' else facet_row
+
                 plot_data = data.copy()
 
-                # Base plot arguments
+                # Force Hue column to string if selected
+                if hue_used is not None and hue_used in plot_data.columns:
+                    plot_data[hue_used] = plot_data[hue_used].astype(str)
+
+                # Let the user specify custom orders
+                category_orders = {}
+
+                if var_x in plot_data.columns and plot_data[var_x].dtype.name in ['object', 'category']:
+                    custom_order_x = st.sidebar.multiselect(
+                        f"Custom Order for x {var_x}",
+                        options=plot_data[var_x].dropna().unique().tolist(),
+                        default=sorted(plot_data[var_x].dropna().unique().tolist())
+                    )
+                    plot_data[var_x] = pd.Categorical(plot_data[var_x], categories=custom_order_x, ordered=True)
+                    category_orders[var_x] = custom_order_x
+
+                if hue_used and hue_used in plot_data.columns and plot_data[hue_used].dtype.name in ['object', 'category']:
+                    custom_order_hue = st.sidebar.multiselect(
+                        f"Custom Order for hue {hue_used}",
+                        options=plot_data[hue_used].dropna().unique().tolist(),
+                        default=sorted(plot_data[hue_used].dropna().unique().tolist())
+                    )
+                    plot_data[hue_used] = pd.Categorical(plot_data[hue_used], categories=custom_order_hue, ordered=True)
+                    category_orders[hue_used] = custom_order_hue
+
+                if facet_col_used and facet_col_used in plot_data.columns and plot_data[facet_col_used].dtype.name in ['object', 'category']:
+                    custom_order_facet_col = st.sidebar.multiselect(
+                        f"Custom Order for col {facet_col_used}",
+                        options=plot_data[facet_col_used].dropna().unique().tolist(),
+                        default=sorted(plot_data[facet_col_used].dropna().unique().tolist())
+                    )
+                    plot_data[facet_col_used] = pd.Categorical(plot_data[facet_col_used], categories=custom_order_facet_col, ordered=True)
+                    category_orders[facet_col_used] = custom_order_facet_col
+
+                if facet_row_used and facet_row_used in plot_data.columns and plot_data[facet_row_used].dtype.name in ['object', 'category']:
+                    custom_order_facet_row = st.sidebar.multiselect(
+                        f"Custom Order for row {facet_row_used}",
+                        options=plot_data[facet_row_used].dropna().unique().tolist(),
+                        default=sorted(plot_data[facet_row_used].dropna().unique().tolist())
+                    )
+                    plot_data[facet_row_used] = pd.Categorical(plot_data[facet_row_used], categories=custom_order_facet_row, ordered=True)
+                    category_orders[facet_row_used] = custom_order_facet_row
+
+                # --- Build the plot ---
                 plot_kwargs = dict(
                     data_frame=plot_data,
                     y=var_y,
                     color_discrete_sequence=PALETTE,
                     width=800,
                     height=600,
+                    category_orders=category_orders
                 )
 
-                if var_x != 'None':
+                if var_x:
                     plot_kwargs['x'] = var_x
-                if hue != 'None':
-                    plot_kwargs['color'] = hue
-                if facet_col != 'None':
-                    plot_kwargs['facet_col'] = facet_col
-                if facet_row != 'None':
-                    plot_kwargs['facet_row'] = facet_row
+                if hue_used:
+                    plot_kwargs['color'] = hue_used
+                if facet_col_used:
+                    plot_kwargs['facet_col'] = facet_col_used
+                if facet_row_used:
+                    plot_kwargs['facet_row'] = facet_row_used
 
                 if tplot == "boxplot":
                     fig = px.box(**plot_kwargs)
                 elif tplot == "violin":
                     fig = px.violin(**plot_kwargs, box=True)
                 elif tplot == "lineplot":
-                    # Always group only by var_x
                     grouped = plot_data.groupby(var_x)[var_y].agg(['mean', 'std']).reset_index()
 
                     fig = go.Figure()
-
                     fig.add_trace(go.Scatter(
                         x=grouped[var_x],
                         y=grouped['mean'],
@@ -739,13 +831,13 @@ def visualization():
                         yaxis_title=var_y,
                     )
 
-                # Optionally add swarm points for boxplot/violin
+                # Swarm Points
                 if swarm_points and tplot in ["boxplot", "violin"]:
-                    unique_hues = plot_data[hue].unique() if hue != 'None' else [None]
+                    unique_hues = plot_data[hue_used].unique() if hue_used else [None]
 
                     for i, hue_val in enumerate(unique_hues):
-                        subset = plot_data[plot_data[hue] == hue_val] if hue_val is not None else plot_data
-                        x_values = subset[var_x] if var_x != 'None' else np.zeros(len(subset))
+                        subset = plot_data[plot_data[hue_used] == hue_val] if hue_val is not None else plot_data
+                        x_values = subset[var_x] if var_x else np.zeros(len(subset))
 
                         fig.add_trace(
                             go.Scatter(
@@ -768,7 +860,9 @@ def visualization():
             # Ridges
             elif plot_type == 'ridges':
                 import numpy as np
+                import plotly.express as px
                 import plotly.graph_objects as go
+                from plotly.subplots import make_subplots
 
                 x_cols = data.columns if risk_it_all else categorical_cols
                 y_cols = data.columns if risk_it_all else numeric_cols
@@ -777,6 +871,8 @@ def visualization():
                 only_numeric = len(cat_cols) == 0  # <- check if only numeric
 
                 var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
+
+                height = st.sidebar.slider("Height (of each row)", 20, 500, 200, 10)
 
                 if not only_numeric:
                     var_x = st.sidebar.selectbox("X Variable (for Ridges)", x_cols, index=0)
@@ -834,7 +930,7 @@ def visualization():
                     fig.update_layout(
                         title=f"Ridge Plot Faceted by {var_x}",
                         width=800,
-                        height=150 * n_rows,
+                        height=height * n_rows,
                         showlegend=True
                     )
                     fig.update_xaxes(title=var_y, row=n_rows, col=1)
@@ -875,31 +971,97 @@ def visualization():
 
                 st.plotly_chart(fig, use_container_width=True)
 
-            # Histogram
+            # --- HISTOGRAM PLOT ---
             elif plot_type == 'histogram':
+                import numpy as np
+                import plotly.express as px
+                import plotly.graph_objects as go
+
+                # Variables depending on risk_it_all
                 x_cols = data.columns if risk_it_all else numeric_cols
-                hue_cols = data.columns if risk_it_all else categorical_cols
+                hue_cols = ['None'] + (data.columns.tolist() if risk_it_all else categorical_cols)
+                facet_cols = ['None'] + (categorical_cols if not risk_it_all else data.columns.tolist())
+
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
                 hue_var = st.sidebar.selectbox("Hue Variable", hue_cols, index=0)
+                facet_col = st.sidebar.selectbox("Facet Column", facet_cols, index=0)
+                facet_row = st.sidebar.selectbox("Facet Row", facet_cols, index=0)
+
                 multiple = st.sidebar.selectbox("Multiple", ["layer", "dodge", "stack"])
                 stat = st.sidebar.selectbox("Stat", ["count", "probability", "percent", "density"])
                 element = st.sidebar.selectbox("Element", ["bars", "step"])
                 common_norm = st.sidebar.checkbox("Common Norm", value=False)
                 cumulative = st.sidebar.checkbox("Cumulative", value=False)
+
                 barmode = 'overlay' if multiple == 'layer' else multiple
+
+                # Copy data to work on
+                plot_data = data.copy()
+
+                # Force hue_var to string if needed
+                if hue_var != "None" and hue_var in plot_data.columns:
+                    plot_data[hue_var] = plot_data[hue_var].astype(str)
+
+                # --- Custom Ordering Section ---
+                category_orders = {}
+
+                # X Variable Custom Order
+                if var_x in plot_data.columns and plot_data[var_x].dtype.name in ['object', 'category']:
+                    custom_order_x = st.sidebar.multiselect(
+                        f"Custom Order for {var_x}",
+                        options=plot_data[var_x].dropna().unique().tolist(),
+                        default=sorted(plot_data[var_x].dropna().unique().tolist()),
+                        key="order_x_hist"
+                    )
+                    plot_data[var_x] = pd.Categorical(plot_data[var_x], categories=custom_order_x, ordered=True)
+                    category_orders[var_x] = custom_order_x
+
+                # Hue Variable Custom Order
+                if hue_var != 'None' and hue_var in plot_data.columns and plot_data[hue_var].dtype.name in ['object', 'category']:
+                    custom_order_hue = st.sidebar.multiselect(
+                        f"Custom Order for {hue_var}",
+                        options=plot_data[hue_var].dropna().unique().tolist(),
+                        default=sorted(plot_data[hue_var].dropna().unique().tolist()),
+                        key="order_hue_hist"
+                    )
+                    plot_data[hue_var] = pd.Categorical(plot_data[hue_var], categories=custom_order_hue, ordered=True)
+                    category_orders[hue_var] = custom_order_hue
+
+                # Facet Column Custom Order
+                if facet_col != 'None' and facet_col in plot_data.columns and plot_data[facet_col].dtype.name in ['object', 'category']:
+                    custom_order_facet_col = st.sidebar.multiselect(
+                        f"Custom Order for {facet_col}",
+                        options=plot_data[facet_col].dropna().unique().tolist(),
+                        default=sorted(plot_data[facet_col].dropna().unique().tolist()),
+                        key="order_facet_col_hist"
+                    )
+                    plot_data[facet_col] = pd.Categorical(plot_data[facet_col], categories=custom_order_facet_col, ordered=True)
+                    category_orders[facet_col] = custom_order_facet_col
+
+                # Facet Row Custom Order
+                if facet_row != 'None' and facet_row in plot_data.columns and plot_data[facet_row].dtype.name in ['object', 'category']:
+                    custom_order_facet_row = st.sidebar.multiselect(
+                        f"Custom Order for {facet_row}",
+                        options=plot_data[facet_row].dropna().unique().tolist(),
+                        default=sorted(plot_data[facet_row].dropna().unique().tolist()),
+                        key="order_facet_row_hist"
+                    )
+                    plot_data[facet_row] = pd.Categorical(plot_data[facet_row], categories=custom_order_facet_row, ordered=True)
+                    category_orders[facet_row] = custom_order_facet_row
+
+                # --- Plotting ---
                 if element == "step":
+                    import plotly.graph_objects as go
                     fig = go.Figure()
-                    for hue_val in data[hue_var].unique() if hue_var else [None]:
-                        subset = data[data[hue_var] == hue_val] if hue_var else data
+                    for hue_val in plot_data[hue_var].dropna().unique() if hue_var != "None" else [None]:
+                        subset = plot_data[plot_data[hue_var] == hue_val] if hue_var != "None" else plot_data
                         fig.add_trace(
                             go.Histogram(
                                 x=subset[var_x],
                                 histnorm=stat if stat != "count" else None,
                                 cumulative_enabled=cumulative,
                                 opacity=0.75 if multiple == 'layer' else 1.0,
-                                name=str(hue_val) if hue_var else var_x,
-                                histfunc="sum",
-                                bingroup=1 if common_norm else None
+                                name=str(hue_val) if hue_val is not None else var_x,
                             )
                         )
                     fig.update_layout(
@@ -911,141 +1073,221 @@ def visualization():
                         yaxis_title=stat.capitalize(),
                         showlegend=True
                     )
+
                 else:
-                    fig = px.histogram(data, x=var_x, color=hue_var, barmode=barmode, 
-                                      histnorm=stat if stat != "count" else None, 
-                                      cumulative=cumulative, 
-                                      opacity=0.75 if multiple == 'layer' else 1.0, 
-                                      color_discrete_sequence=PALETTE, 
-                                      width=800, height=600)
+                    fig = px.histogram(
+                        plot_data,
+                        x=var_x,
+                        color=hue_var if hue_var != "None" else None,
+                        facet_col=facet_col if facet_col != "None" else None,
+                        facet_row=facet_row if facet_row != "None" else None,
+                        barmode=barmode,
+                        histnorm=stat if stat != "count" else None,
+                        cumulative=cumulative,
+                        category_orders=category_orders,
+                        color_discrete_sequence=PALETTE,
+                        width=800,
+                        height=600
+                    )
+
                 st.plotly_chart(fig, use_container_width=True)
 
-            # Density 1 (Safe Univariate or Hue Density)
-            elif plot_type == 'density 1':
+            # --- DENSITY 1 or 2 (Unified Logic) ---
+            elif plot_type in ["density 1", "density 2"]:
                 import numpy as np
-                import plotly.graph_objects as go  # ← THIS was missing!
+                import plotly.express as px
+                import plotly.graph_objects as go
+                from plotly.subplots import make_subplots
+                from scipy.stats import gaussian_kde
 
                 x_cols = data.columns if risk_it_all else numeric_cols
                 cat_cols = data.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
-                has_categorical = len(cat_cols) > 0
 
-                var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
+                plot_data = data.copy()
 
-                if has_categorical:
-                    hue_cols = [None] + (data.columns.tolist() if risk_it_all else cat_cols)
-                    hue_var = st.sidebar.selectbox(
-                        "Hue Variable", hue_cols, index=0,
-                        format_func=lambda x: "None" if x is None else x
-                    )
+                # --- Sidebar Inputs ---
+                var_x = st.sidebar.selectbox("X Variable", x_cols, index=0, key="density_var_x")
+
+                if plot_type == "density 2":
+                    y_cols = data.columns if risk_it_all else numeric_cols
+                    var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0, key="density_var_y")
                 else:
-                    hue_var = None  # No hue option shown
+                    var_y = None
 
-                multiple = st.sidebar.selectbox("Multiple", ["layer", "stack"])
-                common_norm = st.sidebar.checkbox("Common Norm (Normalize)", value=False)
-                cumulative = st.sidebar.checkbox("Cumulative Density", value=False)
+                hue_cols = ['None'] + (data.columns.tolist() if risk_it_all else cat_cols)
+                hue_var = st.sidebar.selectbox("Hue Variable (optional)", hue_cols, index=0, key="density_hue_var")
 
-                fig = go.Figure()
-                x_values = np.linspace(data[var_x].min(), data[var_x].max(), 200)
-                offset = 0
-                max_density = 0
+                facet_cols = ['None'] + (data.columns.tolist() if risk_it_all else cat_cols)
+                facet_col = st.sidebar.selectbox("Facet Column (optional)", facet_cols, index=0, key="density_facet_col")
+                facet_row = st.sidebar.selectbox("Facet Row (optional)", facet_cols, index=0, key="density_facet_row")
 
-                if hue_var is None:
-                    hue_values = [None]
+                if plot_type == "density 1":
+                    multiple = st.sidebar.selectbox("Multiple", ["layer", "stack"], key="density1_multiple")
+                    common_norm = st.sidebar.checkbox("Common Norm (Normalize)", value=False, key="density1_common_norm")
+                    cumulative = st.sidebar.checkbox("Cumulative Density", value=False, key="density1_cumulative")
                 else:
-                    hue_values = data[hue_var].dropna().unique()
+                    kind = st.sidebar.selectbox("Kind", ["hist", "kde"], key="density2_kind")
+                    common_norm = st.sidebar.checkbox("Common Norm (Normalize)", value=False, key="density2_common_norm")
+                    rug = st.sidebar.checkbox("Add Rug Plot?", value=False, key="density2_rug")
 
-                for idx, hue_val in enumerate(hue_values):
-                    subset = data[data[hue_var] == hue_val] if hue_var is not None else data
-                    x_data = subset[var_x].dropna()
-                    if len(x_data) < 2:
-                        continue
-                    try:
-                        kde = gaussian_kde(x_data)
-                        density = kde(x_values)
-                        if cumulative:
-                            density = np.cumsum(density)
-                            density = density / density[-1]  # Normalize cumulative to 1
-                        if common_norm and not cumulative:
-                            density = density / density.max()
-                        y_values = density + offset if multiple == "stack" else density
-                        fig.add_trace(
-                            go.Scatter(
-                                x=x_values,
-                                y=y_values,
-                                mode='lines',
-                                fill='tozeroy' if multiple == "stack" else None,
-                                name=str(hue_val) if hue_var else var_x,
-                                line=dict(color=PALETTE[idx % len(PALETTE)])
-                            )
+                # --- Category Orders ---
+                category_orders = {}
+
+                def add_category_order(var_name, prefix):
+                    if var_name and var_name != 'None' and plot_data[var_name].dtype.name in ['object', 'category']:
+                        custom_order = st.sidebar.multiselect(
+                            f"Custom Order for {prefix} {var_name}",
+                            options=plot_data[var_name].dropna().unique().tolist(),
+                            default=sorted(plot_data[var_name].dropna().unique().tolist()),
+                            key=f"{prefix}_custom_order_{var_name}"
                         )
-                        if multiple == "stack":
-                            offset += max_density
-                    except Exception:
-                        continue
+                        plot_data[var_name] = pd.Categorical(plot_data[var_name], categories=custom_order, ordered=True)
+                        category_orders[var_name] = custom_order
 
-                fig.update_layout(
-                    title=f"1D Density Plot: {var_x}",
-                    xaxis_title=var_x,
-                    yaxis_title="Density",
-                    width=800,
-                    height=600,
-                    showlegend=True
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                add_category_order(var_x, 'x')
+                if var_y: add_category_order(var_y, 'y')
+                add_category_order(hue_var, 'hue')
+                add_category_order(facet_col, 'col')
+                add_category_order(facet_row, 'row')
 
-            # Density 2
-            elif plot_type == 'density 2':
-                import numpy as np
+                # --- Now Build the Plots ---
 
-                x_cols = data.columns if risk_it_all else numeric_cols
-                y_cols = data.columns if risk_it_all else numeric_cols
-                hue_cols = ['None'] + (data.columns.tolist() if risk_it_all else categorical_cols)
-                col_cols = ['None'] + (data.columns.tolist() if risk_it_all else categorical_cols)
+                ## --- DENSITY 1 ---
+                if plot_type == "density 1":
+                    facet_active = (facet_col != 'None') or (facet_row != 'None')
 
-                var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
-                var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
-                hue_var = st.sidebar.selectbox("Hue Variable", hue_cols, index=0)
-                col_var = st.sidebar.selectbox("Facet Column", col_cols, index=0)
+                    if facet_active:
+                        facets = [col for col in [facet_row, facet_col] if col != 'None']
+                        facet_combinations = plot_data[facets].drop_duplicates()
+                        n_rows = facet_combinations[facet_row].nunique() if facet_row != 'None' else 1
+                        n_cols = facet_combinations[facet_col].nunique() if facet_col != 'None' else 1
+                    else:
+                        n_rows, n_cols = 1, 1
 
-                kind = st.sidebar.selectbox("Kind", ["hist", "kde"])
-                common_norm = st.sidebar.checkbox("Common Norm", value=False)
-                rug = st.sidebar.checkbox("Add Rug Plot?", value=False)
+                    subplot_titles = []
+                    if facet_active:
+                        for _, row in facet_combinations.iterrows():
+                            title = []
+                            if facet_row != 'None':
+                                title.append(f"{facet_row}: {row[facet_row]}")
+                            if facet_col != 'None':
+                                title.append(f"{facet_col}: {row[facet_col]}")
+                            subplot_titles.append(" | ".join(title))
 
-                # Determine if faceting is active
-                facet_active = col_var != 'None'
-
-                if kind == "hist":
-                    fig = px.density_heatmap(
-                        data_frame=data,
-                        x=var_x,
-                        y=var_y,
-                        color_continuous_scale='Viridis',
-                        histnorm='probability density' if not common_norm else None,
-                        facet_col=col_var if facet_active else None,
-                        marginal_x='rug' if rug else None,
-                        marginal_y='rug' if rug else None,
-                        width=800,
-                        height=600
-                    )
-                else:  # kind == "kde"
-                    fig = px.density_contour(
-                        data_frame=data,
-                        x=var_x,
-                        y=var_y,
-                        color=hue_var if hue_var != 'None' else None,
-                        color_discrete_sequence=PALETTE,
-                        facet_col=col_var if facet_active else None,
-                        marginal_x='rug' if rug else None,
-                        marginal_y='rug' if rug else None,
-                        width=800,
-                        height=600
+                    fig = make_subplots(
+                        rows=n_rows,
+                        cols=n_cols,
+                        subplot_titles=subplot_titles if facet_active else None,
+                        horizontal_spacing=0.08,
+                        vertical_spacing=0.1,
+                        shared_xaxes=True
                     )
 
-                st.plotly_chart(fig, use_container_width=True)
+                    x_range = np.linspace(plot_data[var_x].dropna().min(), plot_data[var_x].dropna().max(), 200)
+
+                    if facet_active:
+                        group_cols = []
+                        if facet_row != 'None': group_cols.append(facet_row)
+                        if facet_col != 'None': group_cols.append(facet_col)
+                        facet_groups = plot_data.groupby(group_cols)
+                    else:
+                        facet_groups = [((), plot_data)]
+
+                    for idx, (facet_vals, group_df) in enumerate(facet_groups):
+                        if facet_active:
+                            facet_vals = list(facet_vals) if isinstance(facet_vals, tuple) else [facet_vals]
+                            row_idx = list(facet_combinations[facet_row].dropna().unique()).index(facet_vals[0]) + 1 if facet_row != 'None' else 1
+                            col_idx = list(facet_combinations[facet_col].dropna().unique()).index(facet_vals[-1]) + 1 if facet_col != 'None' else 1
+                        else:
+                            row_idx, col_idx = 1, 1
+
+                        hue_values = group_df[hue_var].dropna().unique() if hue_var != 'None' else [None]
+
+                        offset = 0
+                        for j, hue_val in enumerate(hue_values):
+                            subset = group_df[group_df[hue_var] == hue_val] if hue_var != 'None' else group_df
+                            x_data = subset[var_x].dropna()
+                            if len(x_data) < 2:
+                                continue
+                            try:
+                                kde = gaussian_kde(x_data)
+                                density = kde(x_range)
+                                if cumulative:
+                                    density = np.cumsum(density)
+                                    density = density / density[-1]
+                                if common_norm and not cumulative:
+                                    density = density / density.max()
+                                y_values = density + offset if multiple == "stack" else density
+
+                                fig.add_trace(
+                                    go.Scatter(
+                                        x=x_range,
+                                        y=y_values,
+                                        mode='lines',
+                                        fill='tozeroy' if multiple == "stack" else None,
+                                        name=f"{hue_val}" if hue_var != 'None' else str(var_x),
+                                        line=dict(color=PALETTE[j % len(PALETTE)]),
+                                        showlegend=(idx == 0)
+                                    ),
+                                    row=row_idx,
+                                    col=col_idx
+                                )
+
+                                if multiple == "stack":
+                                    offset += y_values.max()
+                            except Exception:
+                                continue
+
+                    fig.update_layout(
+                        title=f"Density Plot of {var_x}",
+                        width=900,
+                        height=300 * n_rows,
+                        showlegend=True
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                ## --- DENSITY 2 ---
+                else:
+                    if kind == "hist":
+                        fig = px.density_heatmap(
+                            plot_data,
+                            x=var_x,
+                            y=var_y,
+                            facet_col=facet_col if facet_col != 'None' else None,
+                            facet_row=facet_row if facet_row != 'None' else None,
+                            color_continuous_scale='Viridis',
+                            histnorm='probability density' if not common_norm else None,
+                            marginal_x='rug' if rug else None,
+                            marginal_y='rug' if rug else None,
+                            width=800,
+                            height=600,
+                            category_orders=category_orders
+                        )
+                    else:
+                        fig = px.density_contour(
+                            plot_data,
+                            x=var_x,
+                            y=var_y,
+                            color=hue_var if hue_var != 'None' else None,
+                            facet_col=facet_col if facet_col != 'None' else None,
+                            facet_row=facet_row if facet_row != 'None' else None,
+                            color_discrete_sequence=PALETTE,
+                            marginal_x='rug' if rug else None,
+                            marginal_y='rug' if rug else None,
+                            width=800,
+                            height=600,
+                            category_orders=category_orders
+                        )
+
+                    st.plotly_chart(fig, use_container_width=True)
 
             # Scatter
             elif plot_type == 'scatter':
                 import numpy as np
+                import plotly.express as px
+                import plotly.graph_objects as go
+                from plotly.subplots import make_subplots
+
                 # Define available columns depending on risk_it_all option
                 x_cols = data.columns if risk_it_all else numeric_cols
                 y_cols = data.columns if risk_it_all else numeric_cols
@@ -1133,6 +1375,9 @@ def visualization():
             # Catplot
             elif plot_type == 'catplot':
                 import numpy as np
+                import plotly.express as px
+                import plotly.graph_objects as go
+                from plotly.subplots import make_subplots
 
                 x_cols = data.columns if risk_it_all else categorical_cols
                 y_cols = data.columns if risk_it_all else categorical_cols
@@ -1181,8 +1426,9 @@ def visualization():
             # Regression
             elif plot_type == 'regression':
                 import numpy as np
-                import statsmodels.api as sm
+                import plotly.express as px
                 import plotly.graph_objects as go
+                import statsmodels.api as sm
 
                 x_cols = data.columns if risk_it_all else numeric_cols
                 y_cols = data.columns if risk_it_all else numeric_cols
@@ -1191,22 +1437,21 @@ def visualization():
                 var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
                 var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
                 hue = st.sidebar.selectbox("Hue (Color)", hue_cols, index=0)
-                order = st.sidebar.selectbox("Order", [1, 2, 3], index=0)
+                order = st.sidebar.selectbox("Order of Polynomial Fit", [1, 2, 3], index=0)
                 ci_level = st.sidebar.selectbox("Confidence Interval (%)", [68, 90, 95, 99], index=2)
                 use_hue = st.sidebar.checkbox("Use Hue?", value=True)
 
                 plot_data = data.copy()
-
                 fig = go.Figure()
 
-                # Define groups (by hue if used)
-                if use_hue and hue != 'None':
+                # Safely define groups
+                if use_hue and hue != 'None' and hue in plot_data.columns:
                     groups = plot_data[hue].dropna().unique()
                 else:
                     groups = [None]
 
                 for idx, g in enumerate(groups):
-                    if g is not None:
+                    if g is not None and hue in plot_data.columns:
                         subset = plot_data[plot_data[hue] == g]
                     else:
                         subset = plot_data
@@ -1214,7 +1459,7 @@ def visualization():
                     X = subset[var_x]
                     Y = subset[var_y]
 
-                    # Drop NaN
+                    # Drop NaNs
                     mask = (~X.isna()) & (~Y.isna())
                     X = X[mask]
                     Y = Y[mask]
@@ -1222,7 +1467,7 @@ def visualization():
                     if X.empty or Y.empty:
                         continue
 
-                    # Scatter points
+                    # Scatter plot
                     fig.add_trace(go.Scatter(
                         x=X,
                         y=Y,
@@ -1232,19 +1477,19 @@ def visualization():
                         showlegend=True
                     ))
 
-                    # Regression model
+                    # Polynomial regression
                     X_design = sm.add_constant(np.vander(X, N=order+1, increasing=True))
                     model = sm.OLS(Y, X_design).fit()
 
-                    # X prediction points
+                    # Prediction
                     x_pred = np.linspace(X.min(), X.max(), 100)
                     X_pred_design = sm.add_constant(np.vander(x_pred, N=order+1, increasing=True))
-
-                    # Predict y values + confidence intervals
                     y_pred = model.predict(X_pred_design)
+
+                    # Confidence intervals
                     pred_summary = model.get_prediction(X_pred_design).summary_frame(alpha=(1 - ci_level / 100))
 
-                    # Add regression line
+                    # Regression line
                     fig.add_trace(go.Scatter(
                         x=x_pred,
                         y=y_pred,
@@ -1254,12 +1499,12 @@ def visualization():
                         showlegend=True
                     ))
 
-                    # Add confidence band
+                    # Confidence band
                     fig.add_trace(go.Scatter(
                         x=np.concatenate([x_pred, x_pred[::-1]]),
                         y=np.concatenate([pred_summary['mean_ci_upper'], pred_summary['mean_ci_lower'][::-1]]),
                         fill='toself',
-                        fillcolor=f"rgba(0, 100, 80, 0.2)",
+                        fillcolor=f"rgba(0,100,80,0.2)",
                         line=dict(color='rgba(255,255,255,0)'),
                         hoverinfo="skip",
                         showlegend=False
