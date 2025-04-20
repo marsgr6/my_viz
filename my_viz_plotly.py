@@ -279,10 +279,10 @@ def visualization():
         st.success("Using imputed dataset for visualization.")
     elif "working_df" in st.session_state:
         data = st.session_state["working_df"]
-        st.info("Using cleaned dataset (after removing NaNs) for visualization.")
+        st.info("Using original dataset for visualization.")
     else:
         data = st.session_state["filtered_df"]
-        st.info("Using original uploaded dataset for visualization.")
+        st.info("Using original uploaded dataset for visualization (filtered).")
 
 
     numeric_cols = st.session_state["numeric_cols"]
@@ -531,24 +531,247 @@ def visualization():
             st.plotly_chart(fig, use_container_width=True)
 
         elif plot_type == "missingno":
-            tplot = st.sidebar.selectbox("Plot Type", ["matrix", "bars", "heatmap", "dendrogram"])
-            plt.close('all')  # Close any existing figures
-            fig, ax = plt.subplots(figsize=(12, 8))  # Explicitly create figure and axes
-            try:
-                if tplot == "matrix":
-                    msno.matrix(data, ax=ax)
-                elif tplot == "bars":
-                    msno.bar(data, ax=ax)
-                elif tplot == "heatmap":
-                    msno.heatmap(data, ax=ax)
-                elif tplot == "dendrogram":
-                    msno.dendrogram(data, ax=ax)
-                plt.tight_layout()  # Adjust layout to prevent cutoff
-                st.pyplot(fig)  # Render Matplotlib figure for missingno
-            except Exception as e:
-                st.error(f"Error rendering {tplot} plot: {e}")
-            finally:
-                plt.close(fig)  # Clean up figure
+            import numpy as np
+            import plotly.express as px
+            import plotly.graph_objects as go
+            from scipy.cluster.hierarchy import linkage, dendrogram
+            import scipy.spatial.distance as ssd
+
+            st.sidebar.subheader("Missing Data Visualization")
+            tplot = st.sidebar.selectbox("Plot Type", ["matrix", "bars", "heatmap"])
+
+            # --- Build the missingness map (Presence = 1, Missing = 0) ---
+            mapped_data = (~data.isna()).astype(int)
+
+            # --- MATRIX ---
+            if tplot == "matrix":
+                fig = px.imshow(
+                    mapped_data.values,
+                    labels=dict(x="Columns", y="Rows", color="Present"),
+                    x=mapped_data.columns,
+                    y=mapped_data.index,
+                    #color_continuous_scale=[[0.0, "yellow"], [1.0, "black"]],
+                    color_continuous_scale="viridis",
+                    range_color=[0, 1],  # Force 0/1
+                    aspect='auto',
+                    width=1000,
+                    height=600
+                )
+                fig.update_layout(title="Missing Data Matrix (1 = Present, 0 = Missing)")
+                st.plotly_chart(fig, use_container_width=True)
+
+            # --- BARS ---
+            elif tplot == "bars":
+                import plotly.express as px
+
+                # Build 0/1 map
+                mapped_data = data.notnull().astype(int)
+
+                # Calculate counts
+                missing_counts = mapped_data.sum(axis=0)
+
+                # --- Checkbox to filter full columns ---
+                hide_no_missing = st.sidebar.checkbox("Hide Variables Without Missing Values", value=False)
+
+                if hide_no_missing:
+                    missing_counts = missing_counts[missing_counts < mapped_data.shape[0]]
+
+                if missing_counts.empty:
+                    st.warning("No variables with missing data to plot.")
+                    st.stop()
+
+                # --- Sort variables by counts ---
+                missing_counts = missing_counts.sort_values(ascending=False)
+
+                df_missing = pd.DataFrame({
+                    "Variable": missing_counts.index,
+                    "NonMissingCount": missing_counts.values
+                })
+
+                # --- Plot ---
+                fig = px.bar(
+                    df_missing,
+                    x="Variable",
+                    y="NonMissingCount",
+                    color="NonMissingCount",
+                    color_continuous_scale="Viridis",
+                    text="NonMissingCount",
+                    title="Non-Missing Data Count per Variable",
+                    width=800,
+                    height=600
+                )
+
+                fig.update_traces(textposition='outside')
+                fig.update_layout(
+                    xaxis_title="Variables",
+                    yaxis_title="Count of Non-Missing Values",
+                    margin=dict(l=80, r=20, t=50, b=150),
+                    xaxis_tickangle=45,
+                    coloraxis_colorbar=dict(title="NonMissingCount")
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+            # --- HEATMAP (Missingness Correlation Matrix, sorted, lower triangle only) ---
+            elif tplot == "heatmap":
+                import numpy as np
+                import plotly.express as px
+                from scipy.spatial.distance import squareform
+                from scipy.cluster.hierarchy import linkage, leaves_list
+
+                # --- 1. Build the 0/1 map ---
+                mapped_data = data.notnull().astype(int)
+
+                # --- 2. Drop columns that are full (no missing values) ---
+                cols_with_missing = mapped_data.columns[mapped_data.nunique() > 1]
+                mapped_data = mapped_data[cols_with_missing]
+
+                if mapped_data.shape[1] < 2:
+                    st.warning("Not enough variables with missing data to plot a heatmap.")
+                    st.stop()
+
+                # --- 3. Correlation of missingness ---
+                corr_matrix = mapped_data.corr()
+
+                # --- 4. Force symmetry ---
+                corr_matrix = (corr_matrix + corr_matrix.T) / 2
+
+                # --- 5. Build condensed distance matrix ---
+                distance_matrix = 1 - corr_matrix
+                np.fill_diagonal(distance_matrix.values, 0)
+                condensed_distance = squareform(distance_matrix.values)
+
+                # --- 6. Perform hierarchical clustering ---
+                linkage_matrix = linkage(condensed_distance, method='ward')
+                ordered_indices = leaves_list(linkage_matrix)
+                ordered_columns = corr_matrix.columns[ordered_indices]
+
+                # --- 7. Sort the correlation matrix ---
+                sorted_corr = corr_matrix.loc[ordered_columns, ordered_columns]
+
+                # --- 8. Set NaN in upper triangle ---
+                sorted_corr_masked = sorted_corr.copy()
+                sorted_corr_masked.values[np.triu_indices_from(sorted_corr_masked, 1)] = np.nan
+
+                # --- 9. Plot ---
+                fig = px.imshow(
+                    sorted_corr_masked,
+                    text_auto=".2f",
+                    color_continuous_scale="Viridis",
+                    zmin=0,
+                    zmax=1,
+                    title="Lower Triangular Missingness Correlation Clustermap",
+                    width=800,
+                    height=800,
+                    labels=dict(color="Correlation")
+                )
+
+                fig.update_layout(
+                    xaxis_title="Variables",
+                    yaxis_title="Variables",
+                    xaxis_side="bottom",
+                    yaxis_autorange="reversed"
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+            elif tplot == "dendrogram":
+                import numpy as np
+                import plotly.figure_factory as ff
+                import plotly.graph_objects as go
+                from scipy.spatial.distance import squareform
+                from scipy.cluster.hierarchy import linkage, leaves_list
+
+                # --- 1. Build 0/1 map ---
+                mapped_data = data.notnull().astype(int)
+
+                # --- 2. Drop full columns (no missingness) ---
+                cols_with_missing = mapped_data.columns[mapped_data.nunique() > 1]
+                mapped_data = mapped_data[cols_with_missing]
+
+                if mapped_data.shape[1] < 2:
+                    st.warning("Not enough variables with missing data to plot a dendrogram.")
+                    st.stop()
+
+                # --- 3. Correlation of missingness ---
+                corr_matrix = mapped_data.corr()
+
+                # --- 4. Force symmetry
+                corr_matrix = (corr_matrix + corr_matrix.T) / 2
+
+                # --- 5. Distance matrix ---
+                distance_matrix = 1 - corr_matrix
+                np.fill_diagonal(distance_matrix.values, 0)
+                condensed_distance = squareform(distance_matrix.values)
+
+                # --- 6. Linkage ---
+                linkage_matrix = linkage(condensed_distance, method="ward")
+                ordered_indices = leaves_list(linkage_matrix)
+                ordered_columns = corr_matrix.columns[ordered_indices]
+
+                # --- 7. Reorder correlation matrix ---
+                sorted_corr = corr_matrix.loc[ordered_columns, ordered_columns]
+
+                # --- 8. Create vertical dendrogram ---
+                dendro = ff.create_dendrogram(
+                    mapped_data.T.values,
+                    orientation='right',
+                    labels=list(mapped_data.columns),
+                    linkagefun=lambda _: linkage_matrix,
+                    color_threshold=None
+                )
+
+                # --- 9. Plot heatmap separately ---
+                heatmap = go.Heatmap(
+                    z=sorted_corr.values,
+                    x=ordered_columns,
+                    y=ordered_columns,
+                    colorscale='Viridis',
+                    colorbar=dict(title="Missingness Corr"),
+                    zmin=0,
+                    zmax=1
+                )
+
+                # --- 10. Create figure with two subplots manually ---
+                fig = go.Figure()
+
+                # Add dendrogram traces
+                for trace in dendro['data']:
+                    fig.add_trace(trace)
+
+                # Shift dendrogram traces to left to fit alongside heatmap
+                for trace in fig['data']:
+                    if trace['xaxis'] == 'x2':
+                        trace['xaxis'] = 'x1'
+                    if trace['yaxis'] == 'y2':
+                        trace['yaxis'] = 'y1'
+
+                fig.add_trace(heatmap)
+
+                fig.update_layout(
+                    width=1000,
+                    height=1000,
+                    showlegend=False,
+                    xaxis=dict(
+                        domain=[0.3, 1],
+                        tickmode='array',
+                        tickvals=list(range(len(ordered_columns))),
+                        ticktext=ordered_columns,
+                        tickangle=45
+                    ),
+                    yaxis=dict(
+                        domain=[0, 0.7],
+                        tickmode='array',
+                        tickvals=list(range(len(ordered_columns))),
+                        ticktext=ordered_columns[::-1],  # Flip y axis
+                        autorange='reversed'
+                    ),
+                    xaxis2=dict(domain=[0, 0.2]),  # for dendrogram
+                    yaxis2=dict(domain=[0.7, 1]),  # for dendrogram
+                    margin=dict(l=100, t=50, b=100)
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
 
         # Interactive plot types with risk_it_all toggle
         else:
@@ -556,27 +779,25 @@ def visualization():
             if plot_type == 'bars':
                 import plotly.express as px
                 import plotly.graph_objects as go
+
+                # Setup columns
                 if categorical_cols:
-                    x_cols =  data.columns.tolist() if risk_it_all else categorical_cols
+                    x_cols = data.columns.tolist() if risk_it_all else categorical_cols
                 else:
                     x_cols = numeric_cols
 
-                # Safe column lists
                 hue_cols = [None] + (data.columns.tolist() if risk_it_all else categorical_cols)
+                facet_cols = ['None'] + (data.columns.tolist() if risk_it_all else categorical_cols)
 
-                var_x = st.sidebar.selectbox(
-                    "X Variable", x_cols, index=0,
-                    format_func=lambda x: "None" if x is None else x
-                )
-                hue = st.sidebar.selectbox(
-                    "Hue (Color)", hue_cols, index=0,
-                    format_func=lambda x: "None" if x is None else x
-                )
+                var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
+                hue = st.sidebar.selectbox("Hue (Color)", hue_cols, index=0)
+                facet_col = st.sidebar.selectbox("Facet Column (optional)", facet_cols, index=0)
+                facet_row = st.sidebar.selectbox("Facet Row (optional)", facet_cols, index=0)
 
                 tplot = st.sidebar.selectbox("Plot Type", ["bars", "heatmap"])
                 bar_mode = st.sidebar.selectbox("Bars Mode", ["Histogram", "Raw Values (height = value in order)"])
 
-                # --- NEW --- Time is here!
+                # Time Mode
                 time_mode = st.sidebar.checkbox("Time is here! (Index X, Select Y)", value=False)
                 if time_mode:
                     y_cols = data.columns.tolist()
@@ -584,11 +805,14 @@ def visualization():
 
                 plot_data = data.copy()
 
-                # Force Hue column to string if selected
+                # Force hue to string
                 if hue is not None:
                     plot_data[hue] = plot_data[hue].astype(str)
 
-                # Let the user specify the order for var_x if it is categorical
+                # Custom Orders
+                category_orders = {}
+
+                # Order for X
                 if var_x in plot_data.columns and plot_data[var_x].dtype.name in ['object', 'category']:
                     custom_order_x = st.sidebar.multiselect(
                         f"Custom Order for x {var_x}",
@@ -596,10 +820,9 @@ def visualization():
                         default=sorted(plot_data[var_x].dropna().unique().tolist())
                     )
                     plot_data[var_x] = pd.Categorical(plot_data[var_x], categories=custom_order_x, ordered=True)
-                else:
-                    custom_order_x = None
+                    category_orders[var_x] = custom_order_x
 
-                # Let the user specify the order for hue if it is categorical
+                # Order for Hue
                 if hue != 'None' and hue in plot_data.columns and plot_data[hue].dtype.name in ['object', 'category']:
                     custom_order_hue = st.sidebar.multiselect(
                         f"Custom Order for hue {hue}",
@@ -607,43 +830,58 @@ def visualization():
                         default=sorted(plot_data[hue].dropna().unique().tolist())
                     )
                     plot_data[hue] = pd.Categorical(plot_data[hue], categories=custom_order_hue, ordered=True)
-                else:
-                    custom_order_hue = None
-
-                category_orders = {}
-
-                if custom_order_x is not None:
-                    category_orders[var_x] = custom_order_x
-
-                if custom_order_hue is not None:
                     category_orders[hue] = custom_order_hue
 
+                # Order for Facet Column
+                if facet_col != 'None' and facet_col in plot_data.columns and plot_data[facet_col].dtype.name in ['object', 'category']:
+                    custom_order_facet_col = st.sidebar.multiselect(
+                        f"Custom Order for Facet Col {facet_col}",
+                        options=plot_data[facet_col].dropna().unique().tolist(),
+                        default=sorted(plot_data[facet_col].dropna().unique().tolist())
+                    )
+                    plot_data[facet_col] = pd.Categorical(plot_data[facet_col], categories=custom_order_facet_col, ordered=True)
+                    category_orders[facet_col] = custom_order_facet_col
+
+                # Order for Facet Row
+                if facet_row != 'None' and facet_row in plot_data.columns and plot_data[facet_row].dtype.name in ['object', 'category']:
+                    custom_order_facet_row = st.sidebar.multiselect(
+                        f"Custom Order for Facet Row {facet_row}",
+                        options=plot_data[facet_row].dropna().unique().tolist(),
+                        default=sorted(plot_data[facet_row].dropna().unique().tolist())
+                    )
+                    plot_data[facet_row] = pd.Categorical(plot_data[facet_row], categories=custom_order_facet_row, ordered=True)
+                    category_orders[facet_row] = custom_order_facet_row
+
+                # --- Bars Plot ---
                 if tplot == "bars":
                     if bar_mode == "Histogram" and not time_mode:
-
                         if hue is not None:
                             fig = px.histogram(
                                 plot_data,
                                 x=var_x,
                                 color=hue,
                                 barmode='group',
+                                facet_col=facet_col if facet_col != 'None' else None,
+                                facet_row=facet_row if facet_row != 'None' else None,
                                 color_discrete_sequence=PALETTE,
+                                category_orders=category_orders,
                                 width=800,
-                                height=600,
-                                category_orders=category_orders
+                                height=600
                             )
                         else:
                             fig = px.histogram(
                                 plot_data,
                                 x=var_x,
+                                facet_col=facet_col if facet_col != 'None' else None,
+                                facet_row=facet_row if facet_row != 'None' else None,
                                 color_discrete_sequence=PALETTE,
+                                category_orders=category_orders,
                                 width=800,
-                                height=600,
-                                category_orders=category_orders
+                                height=600
                             )
                         fig.update_traces(texttemplate='%{y}', textposition='auto')
 
-                    else:  # Raw Values mode or Time Mode
+                    else:  # Raw Values
                         df_plot = plot_data.reset_index()
 
                         if time_mode:
@@ -663,24 +901,28 @@ def visualization():
                                 x=x_axis,
                                 y=y_axis,
                                 color=hue,
+                                facet_col=facet_col if facet_col != 'None' else None,
+                                facet_row=facet_row if facet_row != 'None' else None,
                                 color_discrete_sequence=PALETTE,
+                                category_orders=category_orders,
                                 width=800,
-                                height=600,
-                                category_orders=category_orders
+                                height=600
                             )
                         else:
                             fig = px.bar(
                                 df_plot,
                                 x=x_axis,
                                 y=y_axis,
+                                facet_col=facet_col if facet_col != 'None' else None,
+                                facet_row=facet_row if facet_row != 'None' else None,
                                 color_discrete_sequence=PALETTE,
+                                category_orders=category_orders,
                                 width=800,
-                                height=600,
-                                category_orders=category_orders
+                                height=600
                             )
-                        fig.update_layout(xaxis_title="Index", yaxis_title=y_axis)
+                        fig.update_layout(xaxis_title="Index" if not time_mode else var_x, yaxis_title=y_axis)
 
-                else:  # heatmap
+                else:  # --- Heatmap ---
                     if hue is not None and var_x is not None:
                         if pd.api.types.is_numeric_dtype(plot_data[var_x]):
                             plot_data[var_x] = pd.cut(plot_data[var_x], bins=10)
@@ -704,6 +946,7 @@ def visualization():
                         return
 
                 st.plotly_chart(fig, use_container_width=True)
+
 
             # Boxes
             if plot_type == 'boxes':
@@ -857,117 +1100,186 @@ def visualization():
 
                 st.plotly_chart(fig, use_container_width=True)
 
-            # Ridges
+            # --- Ridges sometime are nice ---
             elif plot_type == 'ridges':
                 import numpy as np
-                import plotly.express as px
                 import plotly.graph_objects as go
                 from plotly.subplots import make_subplots
+                from scipy.stats import gaussian_kde
 
                 x_cols = data.columns if risk_it_all else categorical_cols
                 y_cols = data.columns if risk_it_all else numeric_cols
                 cat_cols = data.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
 
-                only_numeric = len(cat_cols) == 0  # <- check if only numeric
+                only_numeric = len(cat_cols) == 0
 
-                var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
+                height = st.sidebar.slider("Height (each row)", 5, 500, 200, 5)
 
-                height = st.sidebar.slider("Height (of each row)", 20, 500, 200, 10)
+                plot_data = data.copy()
 
                 if not only_numeric:
-                    var_x = st.sidebar.selectbox("X Variable (for Ridges)", x_cols, index=0)
-                    hue_cols = data.columns if risk_it_all else categorical_cols
-                    hue_var = st.sidebar.selectbox("Hue Variable", hue_cols, index=0)
-                    no_hue = st.sidebar.checkbox("No Hue", value=False)
-                    hue_param = var_x if no_hue else hue_var
 
-                    # Get unique var_x values for faceting
-                    x_values_unique = data[var_x].dropna().unique()
+                    var_x = st.sidebar.selectbox("X Variable (for Panels)", x_cols, index=0)
+
+                    x_values_unique = plot_data[var_x].dropna().unique()
+
                     n_rows = len(x_values_unique)
-                    if n_rows == 0:
-                        st.warning("No valid categories in X variable.")
-                        return
 
-                    # Create figure with subplots (one row per var_x value)
-                    fig = make_subplots(
-                        rows=n_rows, cols=1,
-                        row_titles=[str(x) for x in x_values_unique],
-                        shared_xaxes=True,
-                        vertical_spacing=0.05
+                    # ⛔ If too many categories -> fallback
+                    if n_rows > 100:
+                        st.warning(f"Too many categories in {var_x} ({n_rows} unique values). Plotting numeric columns instead.")
+                        only_numeric = True
+                    else:
+                        var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
+                        hue_cols = data.columns if risk_it_all else categorical_cols
+                        hue_var = st.sidebar.selectbox("Hue Variable", hue_cols, index=0)
+                        no_hue = st.sidebar.checkbox("No Hue?", value=False)
+
+                        hue_param = var_x if no_hue else hue_var
+
+                        # --- Sorting options ---
+                        # Custom order for panels (X var)
+                        x_values_unique = plot_data[var_x].dropna().unique()
+                        custom_order_x = st.sidebar.multiselect(
+                            f"Custom Order for {var_x}",
+                            options=sorted(x_values_unique.tolist()),
+                            default=sorted(x_values_unique.tolist())
+                        )
+                        plot_data[var_x] = pd.Categorical(plot_data[var_x], categories=custom_order_x, ordered=True)
+                        x_values_unique = custom_order_x
+
+                        # Custom order for hues
+                        if hue_param != var_x and hue_param in plot_data.columns:
+                            hue_values_unique = plot_data[hue_param].dropna().unique()
+                            custom_order_hue = st.sidebar.multiselect(
+                                f"Custom Order for Hue {hue_param}",
+                                options=sorted(hue_values_unique.tolist()),
+                                default=sorted(hue_values_unique.tolist())
+                            )
+                            plot_data[hue_param] = pd.Categorical(plot_data[hue_param], categories=custom_order_hue, ordered=True)
+                            global_hue_categories = custom_order_hue
+                        else:
+                            global_hue_categories = [None]
+
+                if only_numeric:
+                    # ➔ Plot numeric columns one-by-one (KDEs)
+                    selected_columns = st.sidebar.multiselect(
+                        "Select Numeric Columns for Ridge Plot",
+                        options=plot_data.select_dtypes(include=['number']).columns.tolist(),
+                        default=plot_data.select_dtypes(include=['number']).columns.tolist()
                     )
 
-                    x_range = [data[var_y].min(), data[var_y].max()]
-                    x_values = np.linspace(x_range[0], x_range[1], 100)
+                    n_rows = len(selected_columns)
 
-                    # Plot KDE for each var_x and hue combination
-                    for row_idx, x_val in enumerate(x_values_unique, 1):
-                        subset = data[data[var_x] == x_val]
-                        hue_values = subset[hue_param].dropna().unique() if hue_param != var_x else [x_val]
+                    if n_rows == 0:
+                        st.warning("Please select at least one numeric variable.")
+                        st.stop()
+
+                    fig = make_subplots(
+                        rows=n_rows,
+                        cols=1,
+                        shared_xaxes=True,
+                        vertical_spacing=0.04,
+                        row_titles=[str(c) for c in selected_columns]
+                    )
+
+                    for idx, col in enumerate(selected_columns):
+                        y_data = plot_data[col].dropna()
+                        if len(y_data) < 2:
+                            continue
+
+                        kde = gaussian_kde(y_data)
+                        x_values = np.linspace(y_data.min(), y_data.max(), 200)
+                        density = kde(x_values)
+
+                        fig.add_trace(
+                            go.Scatter(
+                                x=x_values,
+                                y=density / density.max(),
+                                mode='lines',
+                                fill='tozeroy',
+                                name=col,
+                                line=dict(color=PALETTE[idx % len(PALETTE)]),
+                                showlegend=False
+                            ),
+                            row=idx+1,
+                            col=1
+                        )
+
+                        fig.update_yaxes(title="Density", row=idx+1, col=1)
+
+                    fig.update_layout(
+                        title="Ridge Plot of Selected Numeric Variables",
+                        width=900,
+                        height=max(300, n_rows * height),
+                        showlegend=False
+                    )
+
+                    fig.update_xaxes(title="Value", row=n_rows, col=1)
+
+                else:
+                    # ➔ Normal faceted ridges by var_x (few categories, sorted manually)
+                    fig = make_subplots(
+                        rows=n_rows,
+                        cols=1,
+                        shared_xaxes=True,
+                        vertical_spacing=0.04,
+                        row_titles=[str(x) for x in x_values_unique]
+                    )
+
+                    x_range = [plot_data[var_y].dropna().min(), plot_data[var_y].dropna().max()]
+                    x_values = np.linspace(x_range[0], x_range[1], 200)
+
+                    for idx, x_val in enumerate(x_values_unique):
+                        row_idx = idx + 1
+                        subset = plot_data[plot_data[var_x] == x_val]
+
+                        if subset.empty:
+                            continue
+
+                        if hue_param != var_x and hue_param in subset.columns:
+                            hue_values = subset[hue_param].dropna().unique()
+                        else:
+                            hue_values = [None]
+
                         for j, hue_val in enumerate(hue_values):
-                            hue_subset = subset[subset[hue_param] == hue_val] if hue_param != var_x else subset
+                            hue_subset = subset[subset[hue_param] == hue_val] if hue_val is not None else subset
                             y_data = hue_subset[var_y].dropna()
                             if len(y_data) < 2:
                                 continue
-                            try:
-                                kde = gaussian_kde(y_data)
-                                density = kde(x_values)
-                                density = density / density.max() * 0.4  # Normalize height
-                                fig.add_trace(
-                                    go.Scatter(
-                                        x=x_values,
-                                        y=density,
-                                        mode='lines',
-                                        fill='tozeroy',
-                                        name=f"{hue_val}" if hue_param != var_x else str(x_val),
-                                        line=dict(color=PALETTE[j % len(PALETTE)]),
-                                        showlegend=(row_idx == 1)
-                                    ),
-                                    row=row_idx, col=1
-                                )
-                            except Exception:
-                                continue
+
+                            kde = gaussian_kde(y_data)
+                            density = kde(x_values)
+
+                            if hue_val in global_hue_categories:
+                                color_idx = global_hue_categories.index(hue_val)
+                            else:
+                                color_idx = 0
+
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=x_values,
+                                    y=density / density.max(),
+                                    mode='lines',
+                                    fill='tozeroy',
+                                    name=f"{hue_val}" if hue_val is not None else str(x_val),
+                                    line=dict(color=PALETTE[color_idx % len(PALETTE)]),
+                                    showlegend=(row_idx == 1)
+                                ),
+                                row=row_idx,
+                                col=1
+                            )
+
+                        fig.update_yaxes(title="Density", row=row_idx, col=1)
 
                     fig.update_layout(
                         title=f"Ridge Plot Faceted by {var_x}",
-                        width=800,
-                        height=height * n_rows,
+                        width=900,
+                        height=max(300, n_rows * height),
                         showlegend=True
                     )
+
                     fig.update_xaxes(title=var_y, row=n_rows, col=1)
-                    for row in range(1, n_rows + 1):
-                        fig.update_yaxes(title="Density", range=[0, 0.5], row=row, col=1, showticklabels=False)
-
-                else:
-                    # Only numeric -> simple KDE plot
-                    y_data = data[var_y].dropna()
-                    if len(y_data) < 2:
-                        st.warning("Not enough data points for density plot.")
-                        return
-
-                    kde = gaussian_kde(y_data)
-                    x_values = np.linspace(y_data.min(), y_data.max(), 200)
-                    density = kde(x_values)
-
-                    fig = go.Figure()
-                    fig.add_trace(
-                        go.Scatter(
-                            x=x_values,
-                            y=density / density.max(),  # Normalize
-                            mode='lines',
-                            fill='tozeroy',
-                            name=var_y,
-                            line=dict(color=PALETTE[0])
-                        )
-                    )
-
-                    fig.update_layout(
-                        title=f"Univariate Density: {var_y}",
-                        width=800,
-                        height=600,
-                        showlegend=False,
-                        xaxis_title=var_y,
-                        yaxis_title="Density"
-                    )
 
                 st.plotly_chart(fig, use_container_width=True)
 
