@@ -2007,43 +2007,248 @@ def visualization():
                 y_cols = data.columns if risk_it_all else categorical_cols
                 hue_cols = ['None'] + (data.columns.tolist() if risk_it_all else categorical_cols)
                 col_cols = ['None'] + (data.columns.tolist() if risk_it_all else categorical_cols)
+                row_cols = ['None'] + (data.columns.tolist() if risk_it_all else categorical_cols)
                 size_cols = ['None'] + (data.columns.tolist() if risk_it_all else numeric_cols)
 
-                var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
-                var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
-                hue = st.sidebar.selectbox("Hue", hue_cols, index=0)
-                col = st.sidebar.selectbox("Facet Column", col_cols, index=0)
-                size_var = st.sidebar.selectbox("Size Variable", size_cols, index=0)
+                # Controls
+                st.sidebar.header("Catplot Options")
+                var_x = st.sidebar.selectbox(
+                    "X Variable",
+                    x_cols,
+                    index=0,
+                    help="Choose a categorical variable for the x-axis."
+                )
+                var_y = st.sidebar.selectbox(
+                    "Y Variable",
+                    y_cols,
+                    index=0,
+                    help="Choose a categorical variable for the y-axis."
+                )
+                hue = st.sidebar.selectbox(
+                    "Hue",
+                    hue_cols,
+                    index=0,
+                    help="Choose a categorical variable for color grouping (optional)."
+                )
+                col = st.sidebar.selectbox(
+                    "Facet Column",
+                    col_cols,
+                    index=0,
+                    help="Choose a categorical variable to facet the plot into columns (optional; selecting a variable enables faceting)."
+                )
+                row = st.sidebar.selectbox(
+                    "Facet Row",
+                    row_cols,
+                    index=0,
+                    help="Choose a categorical variable to facet the plot into rows (optional; selecting a variable enables faceting)."
+                )
+                size_var = st.sidebar.selectbox(
+                    "Size Variable",
+                    size_cols,
+                    index=0,
+                    help="Choose a numerical variable to control marker sizes (optional)."
+                )
 
-                kind = st.sidebar.selectbox("Kind", ["strip", "swarm"])
-                facet = st.sidebar.checkbox("Facet", value=False)
+                kind = st.sidebar.selectbox(
+                    "Kind",
+                    ["strip", "swarm"],
+                    help="Choose the type of catplot: strip or swarm."
+                )
 
                 # Global point size if no size variable selected
-                global_point_size = st.sidebar.slider("Global Marker Size", 5, 50, 10, 5)
+                global_point_size = st.sidebar.slider(
+                    "Global Marker Size",
+                    5,
+                    50,
+                    10,
+                    5,
+                    help="Set the marker size when no Size Variable is selected."
+                )
 
                 plot_data = data.copy()
 
-                fig = px.strip(
-                    plot_data,
-                    x=var_x,
-                    y=var_y,
-                    color=hue if hue != 'None' else None,
-                    facet_col=col if (facet and col != 'None') else None,
-                    color_discrete_sequence=PALETTE,
-                    width=800,
-                    height=600
-                )
+                # Custom Ordering for Categorical Variables
+                category_orders = {}
 
-                if size_var != 'None' and pd.api.types.is_numeric_dtype(plot_data[size_var]):
-                    # Use size variable if selected
-                    sizes = plot_data[size_var]
-                    fig.update_traces(marker=dict(size=sizes, sizemode='diameter', sizeref=2.*max(sizes)/(15.**2), sizemin=4))
+                # Order for X Variable
+                if var_x in plot_data.columns and plot_data[var_x].dtype.name in ['object', 'category']:
+                    custom_order_x = st.sidebar.multiselect(
+                        f"Custom Order for X Variable ({var_x})",
+                        options=plot_data[var_x].dropna().unique().tolist(),
+                        default=sorted(plot_data[var_x].dropna().unique().tolist()),
+                        help=f"Select the order of categories for {var_x} to display on the x-axis."
+                    )
+                    if custom_order_x:
+                        plot_data[var_x] = pd.Categorical(plot_data[var_x], categories=custom_order_x, ordered=True)
+                        category_orders[var_x] = custom_order_x
+
+                # Order for Y Variable
+                if var_y in plot_data.columns and plot_data[var_y].dtype.name in ['object', 'category']:
+                    custom_order_y = st.sidebar.multiselect(
+                        f"Custom Order for Y Variable ({var_y})",
+                        options=plot_data[var_y].dropna().unique().tolist(),
+                        default=sorted(plot_data[var_y].dropna().unique().tolist()),
+                        help=f"Select the order of categories for {var_y} to display on the y-axis."
+                    )
+                    if custom_order_y:
+                        plot_data[var_y] = pd.Categorical(plot_data[var_y], categories=custom_order_y, ordered=True)
+                        category_orders[var_y] = custom_order_y
+
+                # Order for Hue
+                if hue != 'None' and hue in plot_data.columns and plot_data[hue].dtype.name in ['object', 'category']:
+                    custom_order_hue = st.sidebar.multiselect(
+                        f"Custom Order for Hue ({hue})",
+                        options=plot_data[hue].dropna().unique().tolist(),
+                        default=sorted(plot_data[hue].dropna().unique().tolist()),
+                        help=f"Select the order of categories for {hue} to display in the color grouping."
+                    )
+                    if custom_order_hue:
+                        plot_data[hue] = pd.Categorical(plot_data[hue], categories=custom_order_hue, ordered=True)
+                        category_orders[hue] = custom_order_hue
+
+                # Order for Facet Column
+                if col != 'None' and col in plot_data.columns and plot_data[col].dtype.name in ['object', 'category']:
+                    custom_order_col = st.sidebar.multiselect(
+                        f"Custom Order for Facet Column ({col})",
+                        options=plot_data[col].dropna().unique().tolist(),
+                        default=sorted(plot_data[col].dropna().unique().tolist()),
+                        help=f"Select the order of categories for {col} to display in the facet columns."
+                    )
+                    if custom_order_col:
+                        plot_data[col] = pd.Categorical(plot_data[col], categories=custom_order_col, ordered=True)
+                        category_orders[col] = custom_order_col
+
+                # Order for Facet Row
+                if row != 'None' and row in plot_data.columns and plot_data[row].dtype.name in ['object', 'category']:
+                    custom_order_row = st.sidebar.multiselect(
+                        f"Custom Order for Facet Row ({row})",
+                        options=plot_data[row].dropna().unique().tolist(),
+                        default=sorted(plot_data[row].dropna().unique().tolist()),
+                        help=f"Select the order of categories for {row} to display in the facet rows."
+                    )
+                    if custom_order_row:
+                        plot_data[row] = pd.Categorical(plot_data[row], categories=custom_order_row, ordered=True)
+                        category_orders[row] = custom_order_row
+
+                # Prepare the plot
+                if col != 'None' or row != 'None':
+                    # Faceting enabled: Use make_subplots for manual faceting
+                    col_vals = plot_data[col].dropna().unique() if col != 'None' else [None]
+                    row_vals = plot_data[row].dropna().unique() if row != 'None' else [None]
+
+                    n_cols = max(len(col_vals), 1)
+                    n_rows = max(len(row_vals), 1)
+
+                    # Create subplot figure
+                    fig = make_subplots(
+                        rows=n_rows,
+                        cols=n_cols,
+                        subplot_titles=[
+                            f"{row}: {r} | {col}: {c}" if row != 'None' and col != 'None' else
+                            f"{col}: {c}" if col != 'None' else
+                            f"{row}: {r}" if row != 'None' else ""
+                            for r in row_vals for c in col_vals
+                        ],
+                        shared_yaxes=True,
+                        shared_xaxes=True,
+                        horizontal_spacing=0.1,
+                        vertical_spacing=0.12
+                    )
+
+                    # Color mapping for hue
+                    if hue != 'None':
+                        hue_values = plot_data[hue].dropna().unique()
+                    else:
+                        hue_values = [None]
+
+                    color_map = {}
+                    for idx, hv in enumerate(hue_values):
+                        color_map[hv] = PALETTE[idx % len(PALETTE)]
+
+                    # Add traces for each facet
+                    for i_row, row_val in enumerate(row_vals):
+                        for i_col, col_val in enumerate(col_vals):
+                            row_idx = i_row + 1
+                            col_idx = i_col + 1
+
+                            # Filter data by facet values
+                            sub_data = plot_data.copy()
+                            if row != 'None':
+                                sub_data = sub_data[sub_data[row] == row_val]
+                            if col != 'None':
+                                sub_data = sub_data[sub_data[col] == col_val]
+
+                            if sub_data.empty:
+                                continue
+
+                            for hue_val in hue_values:
+                                # Filter subset by hue
+                                subset = sub_data.copy()
+                                if hue_val is not None:
+                                    subset = subset[subset[hue] == hue_val]
+
+                                if subset.empty:
+                                    continue
+
+                                # Get color for this hue
+                                marker_color = color_map[hue_val]
+
+                                # Create scatter trace
+                                scatter = go.Scatter(
+                                    x=subset[var_x],
+                                    y=subset[var_y],
+                                    mode='markers',
+                                    name=str(hue_val) if hue_val else "Points",
+                                    marker=dict(
+                                        color=marker_color,
+                                        size=global_point_size if size_var == 'None' or not pd.api.types.is_numeric_dtype(plot_data[size_var]) else subset[size_var],
+                                        sizemode='diameter',
+                                        sizeref=2.*subset[size_var].max()/(15.**2) if size_var != 'None' and pd.api.types.is_numeric_dtype(plot_data[size_var]) else None,
+                                        sizemin=4 if size_var != 'None' and pd.api.types.is_numeric_dtype(plot_data[size_var]) else None
+                                    ),
+                                    showlegend=(row_idx == 1 and col_idx == 1),
+                                    legendgroup=str(hue_val) if hue_val else None
+                                )
+
+                                if kind == "swarm":
+                                    scatter.update(marker=dict(sizeref=2.*subset[size_var].max()/(15.**2) if size_var != 'None' else None))
+                                    # Simulate swarm by adding jitter
+                                    scatter.update(x=jittered_values(subset[var_x], 0.3))
+
+                                fig.add_trace(scatter, row=row_idx, col=col_idx)
+
+                    # Update layout
+                    fig.update_layout(
+                        width=800,
+                        height=400 * n_rows,  # Scale height based on number of rows
+                        title="Catplot with Faceting",
+                        showlegend=True,
+                        legend_title=hue if hue != 'None' else None
+                    )
+
                 else:
-                    # Otherwise use a global constant size
-                    fig.update_traces(marker=dict(size=global_point_size))
+                    # No faceting: Use px.strip
+                    fig = px.strip(
+                        plot_data,
+                        x=var_x,
+                        y=var_y,
+                        color=hue if hue != 'None' else None,
+                        color_discrete_sequence=PALETTE,
+                        category_orders=category_orders,
+                        width=800,
+                        height=600
+                    )
 
-                if kind == "swarm":
-                    fig.update_traces(jitter=0.3)
+                    if size_var != 'None' and pd.api.types.is_numeric_dtype(plot_data[size_var]):
+                        # Use size variable if selected
+                        sizes = plot_data[size_var]
+                        fig.update_traces(marker=dict(size=sizes, sizemode='diameter', sizeref=2.*max(sizes)/(15.**2), sizemin=4))
+                    else:
+                        # Otherwise use a global constant size
+                        fig.update_traces(marker=dict(size=global_point_size))
+
+                    if kind == "swarm":
+                        fig.update_traces(jitter=0.3)
 
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -2305,6 +2510,16 @@ def visualization():
     else:
         st.warning("The dataset is empty after preprocessing. Please check your data or selections in the Home section.")
 
+# Helper function to simulate jitter for swarm plot
+def jittered_values(series, jitter_amount=0.3):
+    # Add random jitter to categorical values for swarm effect
+    if pd.api.types.is_numeric_dtype(series):
+        return series + np.random.uniform(-jitter_amount, jitter_amount, size=len(series))
+    else:
+        # For categorical data, convert to numeric codes and add jitter
+        codes = pd.Categorical(series).codes
+        return codes + np.random.uniform(-jitter_amount, jitter_amount, size=len(series))
+
 def about():
 
     with st.sidebar:
@@ -2338,30 +2553,28 @@ def about():
         ➔ **Step 1. Upload Your CSV**  
         📎 Go to the Home section.  
         ➡️ Click: **Upload CSV** and select your dataset.  
-        🖼️ *[Insert Screenshot: Upload CSV]*
+        ![Upload CSV](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/browse_myvp.png)
 
         ➔ **Step 2. Review and Select Columns**  
         ✅ After upload:  
         - Review column types (Numeric/Categorical).
         - Select columns to keep.  
-        🖼️ *[Insert Screenshot: Column Overview and Selection]*
 
         ➔ **Step 3. Assign Variable Types**  
         ⚙️ Assign manually:  
         - Numeric variables  
         - Categorical variables  
-        🖼️ *[Insert Screenshot: Assign Variable Types]*
 
         ➔ **Step 4. Optional Preprocessing**  
         - Subsample (% of data)  
         - Extract Date Features (Year, Month, Day, Hour)  
         - Melt Data (reshape wide to long)  
-        🖼️ *[Insert Screenshot: Subsampling / Date Features / Melting Options]*
+        ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/prepro_myvp.png)
 
         ➔ **Step 5. Preview and Download**  
         📄 Preview the processed dataset.  
         💾 Download your cleaned CSV.  
-        🖼️ *[Insert Screenshot: Preview and Download Button]*
+        ![Insert Screenshot: Upload CSV](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/sample_download_myvp.png)
 
         ➔ **Recommendation:** not all operations can be applied at once, try this:  
         ⚠️ Load ➔ apply operation ➔ check preview ➔ download ➔ repeat.
@@ -2382,8 +2595,6 @@ def about():
         | 🧩 Pairplots | Scatter matrix with KDE diagonals. |
         | ❔ Missingno | Missing data patterns visualization. |
 
-        🖼️ *[Insert Screenshot: Plot Type Selection]*
-
         ---
 
         #### 3. ⚙️ Controls and Customization
@@ -2403,8 +2614,6 @@ def about():
         🔠 **Custom Order**:
         - Sort categories (X, Hue, Facet) manually.
 
-        🖼️ *[Insert Screenshot: Sidebar Controls]*
-
         ---
 
         #### 4. 🧩 Special Behaviors
@@ -2416,8 +2625,6 @@ def about():
         - Matrix view of missingness
         - Missingness correlation heatmap
         - Dendrogram based on missing patterns
-
-        🖼️ *[Insert Screenshot: Missing Data Visualizations]*
 
         ---
 
@@ -2435,6 +2642,75 @@ def about():
 
         If needed, re-upload your dataset anytime to start fresh.  
         _Enjoy exploring your data visually! 🎨_
+
+        ---
+
+        ### Examples: check the plots below and the configuration in the left panel:
+
+        - Bars:
+
+        ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/bars_myvp.png)
+
+        - Boxes:
+
+        ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/boxes_myvp.png)
+
+        - Ridges:
+
+        ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/ridges_myvp.png)
+
+        - Histograms:
+
+        ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/hist_myvp.png)
+
+        - Density 1:
+
+        ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/kde_myvp.png)
+
+        - Density 2:
+
+        ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/kde2_myvp.png)
+
+        - Scatter:
+
+        ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/scatter_myvp.png)
+
+        - Missing values (missingno):
+
+        ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/missingno_myvp.png)
+
+        - Cluster map (similar to correlation map, but variables are grouped by correlation):
+
+        ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/clustermap_myvp.png)
+
+        - Pairplot:
+
+        ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/pair_myvp.png)
+
+        - Regression:
+
+        ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/reg_myvp.png)
+
+        - Ridges (all columns numerical):
+
+        ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/ridges_num_myvp.png)
+
+        - Heatmap (all numerical columns):
+
+        ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/heatnum_myvp.png)
+
+        - Time series as bars:
+
+        ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/barsts_myvp.png)
+
+        - Time series as lines:
+
+        ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/linests_myvp.png)
+
+        - Catplot:
+
+        ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/catplot_myvp.png)
+
         """)
 
     st.markdown("""
