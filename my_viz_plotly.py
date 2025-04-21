@@ -27,9 +27,10 @@ def home():
     ⚠️ **Important:**  
     Your CSV file must be comma-separated, use a dot (`.`) as the decimal separator, and must not include thousands separators or special symbols.  
     Be aware that Excel often modifies CSV files when saving. Please ensure your file is as standard as possible before uploading.
+
+    📎 **You can also try using sample CSV files:**  
+    [Example Datasets on GitHub](https://github.com/marsgr6/r-scripts/tree/master/data/viz_data)
     """)
-
-
 
     if uploaded_file:
         # Define missing value representations
