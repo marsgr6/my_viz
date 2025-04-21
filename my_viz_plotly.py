@@ -779,6 +779,9 @@ def visualization():
             if plot_type == 'bars':
                 import plotly.express as px
                 import plotly.graph_objects as go
+                from plotly.subplots import make_subplots  # Moved to top to avoid UnboundLocalError
+                import pandas as pd
+                import numpy as np
 
                 # Setup columns
                 if categorical_cols:
@@ -796,12 +799,14 @@ def visualization():
 
                 tplot = st.sidebar.selectbox("Plot Type", ["bars", "heatmap"])
                 bar_mode = st.sidebar.selectbox("Bars Mode", ["Histogram", "Raw Values (height = value in order)"])
-
-                # Time Mode
-                time_mode = st.sidebar.checkbox("Time is here! (Index X, Select Y)", value=False)
-                if time_mode:
+                # Add "Time is here" checkbox for bars
+                time_series = st.sidebar.checkbox("Time is here", value=False) if tplot == "bars" else False
+                var_y = None  # Initialize var_y to None
+                if time_series:
                     y_cols = data.columns.tolist()
-                    var_y = st.sidebar.selectbox("Y Variable (for Raw Values)", y_cols, index=0)
+                    # Set a default numerical column if available, otherwise None
+                    default_y = next((col for col in y_cols if pd.api.types.is_numeric_dtype(data[col])), None)
+                    var_y = st.sidebar.selectbox("Y Variable (for Time Series)", y_cols, index=y_cols.index(default_y) if default_y else 0)
 
                 plot_data = data.copy()
 
@@ -854,73 +859,178 @@ def visualization():
 
                 # --- Bars Plot ---
                 if tplot == "bars":
-                    if bar_mode == "Histogram" and not time_mode:
+                    if time_series:
+                        # Ensure var_y is selected
+                        if var_y is None:
+                            st.warning("Please select a Y variable for Time Series mode.")
+                            return
+
+                        # Validate var_x is object (e.g., date) and var_y is numerical
+                        is_object = False
+                        if isinstance(plot_data[var_x].dtype, pd.CategoricalDtype):
+                            # For categorical columns, check the dtype of the categories
+                            if plot_data[var_x].cat.categories.dtype.name == 'object':
+                                is_object = True
+                        else:
+                            # For non-categorical columns, check the dtype directly
+                            if plot_data[var_x].dtype.name == 'object':
+                                is_object = True
+
+                        if not is_object:
+                            st.warning(f"Time series mode requires '{var_x}' to be an object column (e.g., dates).")
+                            return
+
+                        # Check if var_y is numerical
+                        if not pd.api.types.is_numeric_dtype(plot_data[var_y]):
+                            st.warning(f"Time series mode requires '{var_y}' to be a numerical column.")
+                            return
+
+                        # Determine facet values
+                        facet_col_vals = plot_data[facet_col].dropna().unique() if facet_col != 'None' else [None]
+                        facet_row_vals = plot_data[facet_row].dropna().unique() if facet_row != 'None' else [None]
+
+                        n_cols = max(len(facet_col_vals), 1)
+                        n_rows = max(len(facet_row_vals), 1)
+
+                        # Create subplot figure
+                        fig = make_subplots(
+                            rows=n_rows,
+                            cols=n_cols,
+                            shared_yaxes=True,
+                            shared_xaxes=True,
+                            horizontal_spacing=0.1,
+                            vertical_spacing=0.12,
+                            subplot_titles=[
+                                f"{facet_row}: {r} | {facet_col}: {c}"
+                                if facet_row != 'None' and facet_col != 'None' else
+                                f"{facet_col}: {c}" if facet_col != 'None' else
+                                f"{facet_row}: {r}" if facet_row != 'None' else ""
+                                for r in facet_row_vals for c in facet_col_vals
+                            ]
+                        )
+
+                        # Color mapping for hue
                         if hue is not None:
-                            fig = px.histogram(
-                                plot_data,
-                                x=var_x,
-                                color=hue,
-                                barmode='group',
-                                facet_col=facet_col if facet_col != 'None' else None,
-                                facet_row=facet_row if facet_row != 'None' else None,
-                                color_discrete_sequence=PALETTE,
-                                category_orders=category_orders,
-                                width=800,
-                                height=600
-                            )
+                            hue_values = plot_data[hue].dropna().unique()
                         else:
-                            fig = px.histogram(
-                                plot_data,
-                                x=var_x,
-                                facet_col=facet_col if facet_col != 'None' else None,
-                                facet_row=facet_row if facet_row != 'None' else None,
-                                color_discrete_sequence=PALETTE,
-                                category_orders=category_orders,
-                                width=800,
-                                height=600
-                            )
-                        fig.update_traces(texttemplate='%{y}', textposition='auto')
+                            hue_values = [None]
 
-                    else:  # Raw Values
-                        df_plot = plot_data.reset_index()
+                        color_map = {}
+                        for idx, hv in enumerate(hue_values):
+                            color_map[hv] = PALETTE[idx % len(PALETTE)]
 
-                        if time_mode:
-                            x_axis = var_x
-                            y_axis = var_y
-                        else:
+                        # Add bar traces for each facet and hue
+                        for i_row, row_val in enumerate(facet_row_vals):
+                            for i_col, col_val in enumerate(facet_col_vals):
+                                row_idx = i_row + 1
+                                col_idx = i_col + 1
+
+                                # Filter data by facet values
+                                sub_data = plot_data.copy()
+                                if facet_row != 'None':
+                                    sub_data = sub_data[sub_data[facet_row] == row_val]
+                                if facet_col != 'None':
+                                    sub_data = sub_data[sub_data[facet_col] == col_val]
+
+                                if sub_data.empty:
+                                    continue
+
+                                for hue_val in hue_values:
+                                    # Filter subset by hue
+                                    subset = sub_data.copy()
+                                    if hue_val is not None:
+                                        subset = subset[subset[hue] == hue_val]
+
+                                    if subset.empty:
+                                        continue
+
+                                    # Get bar color for this hue
+                                    bar_color = color_map[hue_val]
+
+                                    # Plot raw data as bars without sorting
+                                    fig.add_trace(
+                                        go.Bar(
+                                            x=subset[var_x],
+                                            y=subset[var_y],
+                                            name=str(hue_val) if hue_val else "Bars",
+                                            marker_color=bar_color,
+                                            showlegend=(row_idx == 1 and col_idx == 1)
+                                        ),
+                                        row=row_idx,
+                                        col=col_idx
+                                    )
+
+                        # Update layout
+                        fig.update_layout(
+                            width=800,
+                            height=600,
+                            title=f"Time Series Bar Plot: {var_y} vs {var_x}",
+                            xaxis_title=var_x,
+                            yaxis_title=var_y,
+                            legend_title=hue if hue is not None else None,
+                            showlegend=True,
+                            barmode='group'
+                        )
+
+                    else:
+                        if bar_mode == "Histogram":
+                            if hue is not None:
+                                fig = px.histogram(
+                                    plot_data,
+                                    x=var_x,
+                                    color=hue,
+                                    barmode='group',
+                                    facet_col=facet_col if facet_col != 'None' else None,
+                                    facet_row=facet_row if facet_row != 'None' else None,
+                                    color_discrete_sequence=PALETTE,
+                                    category_orders=category_orders,
+                                    width=800,
+                                    height=600
+                                )
+                            else:
+                                fig = px.histogram(
+                                    plot_data,
+                                    x=var_x,
+                                    facet_col=facet_col if facet_col != 'None' else None,
+                                    facet_row=facet_row if facet_row != 'None' else None,
+                                    color_discrete_sequence=PALETTE,
+                                    category_orders=category_orders,
+                                    width=800,
+                                    height=600
+                                )
+                            fig.update_traces(texttemplate='%{y}', textposition='auto')
+
+                        else:  # Raw Values
+                            df_plot = plot_data.reset_index()
                             x_axis = 'index'
                             y_axis = var_x
 
-                        if y_axis is None:
-                            st.warning("Please select a variable for Y-axis.")
-                            return
-
-                        if hue is not None:
-                            fig = px.bar(
-                                df_plot,
-                                x=x_axis,
-                                y=y_axis,
-                                color=hue,
-                                facet_col=facet_col if facet_col != 'None' else None,
-                                facet_row=facet_row if facet_row != 'None' else None,
-                                color_discrete_sequence=PALETTE,
-                                category_orders=category_orders,
-                                width=800,
-                                height=600
-                            )
-                        else:
-                            fig = px.bar(
-                                df_plot,
-                                x=x_axis,
-                                y=y_axis,
-                                facet_col=facet_col if facet_col != 'None' else None,
-                                facet_row=facet_row if facet_row != 'None' else None,
-                                color_discrete_sequence=PALETTE,
-                                category_orders=category_orders,
-                                width=800,
-                                height=600
-                            )
-                        fig.update_layout(xaxis_title="Index" if not time_mode else var_x, yaxis_title=y_axis)
+                            if hue is not None:
+                                fig = px.bar(
+                                    df_plot,
+                                    x=x_axis,
+                                    y=y_axis,
+                                    color=hue,
+                                    facet_col=facet_col if facet_col != 'None' else None,
+                                    facet_row=facet_row if facet_row != 'None' else None,
+                                    color_discrete_sequence=PALETTE,
+                                    category_orders=category_orders,
+                                    width=800,
+                                    height=600
+                                )
+                            else:
+                                fig = px.bar(
+                                    df_plot,
+                                    x=x_axis,
+                                    y=y_axis,
+                                    facet_col=facet_col if facet_col != 'None' else None,
+                                    facet_row=facet_row if facet_row != 'None' else None,
+                                    color_discrete_sequence=PALETTE,
+                                    category_orders=category_orders,
+                                    width=800,
+                                    height=600
+                                )
+                            fig.update_layout(xaxis_title="Index", yaxis_title=y_axis)
 
                 else:  # --- Heatmap ---
                     if hue is not None and var_x is not None:
@@ -947,7 +1057,6 @@ def visualization():
 
                 st.plotly_chart(fig, use_container_width=True)
 
-
             # Boxes
             if plot_type == 'boxes':
                 import numpy as np
@@ -966,13 +1075,22 @@ def visualization():
                 facet_row = st.sidebar.selectbox("Facet Row", facet_cols, index=0)
                 tplot = st.sidebar.selectbox("Plot Type", ["boxplot", "lineplot", "violin"])
 
-                swarm_points = st.sidebar.checkbox("Overlay Swarm of Points", value=False)
-                band_interval = st.sidebar.checkbox("Show Band in Lineplot (±1 std)", value=False)
-
                 # Fix None values
                 hue_used = None if hue == 'None' else hue
                 facet_col_used = None if facet_col == 'None' else facet_col
                 facet_row_used = None if facet_row == 'None' else facet_row
+
+                # Show swarm points checkbox only when:
+                # 1. No faceting (facet_col_used and facet_row_used are None)
+                # 2. hue_used is None or hue_used == var_x
+                show_swarm_checkbox = (facet_col_used is None and facet_row_used is None and (hue_used is None or hue_used == var_x))
+                swarm_points = st.sidebar.checkbox("Overlay Swarm of Points", value=False) if show_swarm_checkbox else False
+                band_interval = st.sidebar.checkbox("Show Band in Lineplot (CI)", value=False)
+                # Add "Time is here" checkbox for lineplot
+                time_series = st.sidebar.checkbox("Time is here", value=False) if tplot == "lineplot" else False
+                # Add CI level selector for lineplot (only when time_series is not checked)
+                ci_level = st.sidebar.selectbox("Confidence Interval Level", ["68%", "95%", "99%"], index=1) if (band_interval and not time_series) else "95%"
+                ci_level_value = {"68%": 0.68, "95%": 0.95, "99%": 0.99}[ci_level]
 
                 plot_data = data.copy()
 
@@ -1020,85 +1138,260 @@ def visualization():
                     category_orders[facet_row_used] = custom_order_facet_row
 
                 # --- Build the plot ---
-                plot_kwargs = dict(
-                    data_frame=plot_data,
-                    y=var_y,
-                    color_discrete_sequence=PALETTE,
-                    width=800,
-                    height=600,
-                    category_orders=category_orders
-                )
-
-                if var_x:
-                    plot_kwargs['x'] = var_x
-                if hue_used:
-                    plot_kwargs['color'] = hue_used
-                if facet_col_used:
-                    plot_kwargs['facet_col'] = facet_col_used
-                if facet_row_used:
-                    plot_kwargs['facet_row'] = facet_row_used
-
-                if tplot == "boxplot":
-                    fig = px.box(**plot_kwargs)
-                elif tplot == "violin":
-                    fig = px.violin(**plot_kwargs, box=True)
-                elif tplot == "lineplot":
-                    grouped = plot_data.groupby(var_x)[var_y].agg(['mean', 'std']).reset_index()
-
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(
-                        x=grouped[var_x],
-                        y=grouped['mean'],
-                        mode='lines',
-                        name=f'Mean {var_y}',
-                        line=dict(color='blue'),
-                    ))
-
-                    if band_interval:
-                        fig.add_trace(go.Scatter(
-                            x=list(grouped[var_x]) + list(grouped[var_x])[::-1],
-                            y=list(grouped['mean'] + grouped['std']) + list(grouped['mean'] - grouped['std'])[::-1],
-                            fill='toself',
-                            fillcolor='rgba(0,100,80,0.2)',
-                            line=dict(color='rgba(255,255,255,0)'),
-                            hoverinfo="skip",
-                            showlegend=False,
-                            name=f'±1 std band'
-                        ))
-
-                    fig.update_layout(
+                if tplot in ["boxplot", "violin"]:
+                    plot_kwargs = dict(
+                        data_frame=plot_data,
+                        y=var_y,
+                        color_discrete_sequence=PALETTE,
                         width=800,
                         height=600,
-                        title=f'Lineplot of {var_y} vs {var_x}',
-                        xaxis_title=var_x,
-                        yaxis_title=var_y,
+                        category_orders=category_orders
                     )
 
-                # Swarm Points
-                if swarm_points and tplot in ["boxplot", "violin"]:
-                    unique_hues = plot_data[hue_used].unique() if hue_used else [None]
+                    if var_x:
+                        plot_kwargs['x'] = var_x
+                    if hue_used:
+                        plot_kwargs['color'] = hue_used
+                    if facet_col_used:
+                        plot_kwargs['facet_col'] = facet_col_used
+                    if facet_row_used:
+                        plot_kwargs['facet_row'] = facet_row_used
 
-                    for i, hue_val in enumerate(unique_hues):
-                        subset = plot_data[plot_data[hue_used] == hue_val] if hue_val is not None else plot_data
-                        x_values = subset[var_x] if var_x else np.zeros(len(subset))
+                    if tplot == "boxplot":
+                        fig = px.box(**plot_kwargs)
+                    elif tplot == "violin":
+                        fig = px.violin(**plot_kwargs, box=True)
 
-                        fig.add_trace(
-                            go.Scatter(
-                                x=x_values,
-                                y=subset[var_y],
+                    # Swarm Points (only when hue_used is None or hue_used == var_x, and no faceting)
+                    if swarm_points:
+                        # Use Plotly Express to generate swarm points with consistent hue coloring
+                        scatter_kwargs = dict(
+                            data_frame=plot_data,
+                            x=var_x,
+                            y=var_y,
+                            color=hue_used,
+                            color_discrete_sequence=PALETTE,
+                            category_orders=category_orders
+                        )
+                        scatter_fig = px.scatter(**scatter_kwargs)
+
+                        # Add scatter traces to the main figure
+                        for trace in scatter_fig.data:
+                            trace.update(
                                 mode='markers',
-                                marker=dict(
-                                    color=PALETTE[i % len(PALETTE)],
-                                    size=5,
-                                    opacity=0.6,
-                                    line=dict(width=0)
-                                ),
-                                name=str(hue_val) if hue_val is not None else "",
+                                marker=dict(size=5, opacity=0.6, line=dict(width=0)),
                                 showlegend=False
                             )
-                        )
+                            # Since faceting is disabled (due to show_swarm_checkbox), add to main plot
+                            fig.add_trace(trace, row=1, col=1)
 
-                st.plotly_chart(fig, use_container_width=True)
+                    # Render plot for boxplot or violin
+                    plot_placeholder = st.empty()
+                    plot_placeholder.plotly_chart(fig, use_container_width=True, key=f"{tplot}_{var_x}_{var_y}_{hue_used}")
+
+                elif tplot == "lineplot":
+                    import plotly.graph_objects as go
+                    from plotly.subplots import make_subplots
+                    import re
+                    from scipy.stats import t
+
+                    # Debug: Track rendering
+                    # st.write(f"Rendering lineplot with key: lineplot_{var_x}_{var_y}_{hue_used}")
+
+                    # Debug: Inspect plot_data for NaNs, outliers
+                    # st.write(f"Summary of {var_y}:", plot_data[var_y].describe())
+                    # st.write(f"NaNs in {var_y}:", plot_data[var_y].isna().sum())
+
+                    # Determine facet values
+                    facet_col_vals = plot_data[facet_col_used].dropna().unique() if facet_col_used else [None]
+                    facet_row_vals = plot_data[facet_row_used].dropna().unique() if facet_row_used else [None]
+
+                    n_cols = max(len(facet_col_vals), 1)
+                    n_rows = max(len(facet_row_vals), 1)
+
+                    # Create subplot figure
+                    fig = make_subplots(
+                        rows=n_rows,
+                        cols=n_cols,
+                        shared_yaxes=True,
+                        shared_xaxes=True,
+                        horizontal_spacing=0.1,
+                        vertical_spacing=0.12,
+                        subplot_titles=[
+                            f"{facet_row_used}: {r} | {facet_col_used}: {c}"
+                            if facet_row_used and facet_col_used else
+                            f"{facet_col_used}: {c}" if facet_col_used else
+                            f"{facet_row_used}: {r}" if facet_row_used else ""
+                            for r in facet_row_vals for c in facet_col_vals
+                        ]
+                    )
+
+                    # Color mapping for hue (use hue if different from var_x, otherwise single color)
+                    if hue_used and hue_used != var_x:
+                        hue_values = plot_data[hue_used].dropna().unique()
+                    else:
+                        hue_values = [None]  # Treat as no hue for coloring
+
+                    color_map = {}
+                    for idx, hv in enumerate(hue_values):
+                        color_map[hv] = PALETTE[idx % len(PALETTE)]
+
+                    # Helper function to convert line color to semi-transparent fillcolor
+                    def to_fillcolor(line_color, alpha=0.2):
+                        try:
+                            # Handle hex colors
+                            if line_color.startswith('#'):
+                                from matplotlib.colors import to_rgb
+                                rgb = to_rgb(line_color)
+                                return f'rgba({int(rgb[0]*255)},{int(rgb[1]*255)},{int(rgb[2]*255)},{alpha})'
+                            
+                            # Handle rgb strings (e.g., 'rgb(102,194,165)')
+                            rgb_match = re.match(r'rgb\((\d+),\s*(\d+),\s*(\d+)\)', line_color)
+                            if rgb_match:
+                                r, g, b = map(int, rgb_match.groups())
+                                return f'rgba({r},{g},{b},{alpha})'
+                            
+                            # Handle named colors (e.g., 'blue', 'red')
+                            from matplotlib.colors import to_rgb
+                            rgb = to_rgb(line_color)
+                            return f'rgba({int(rgb[0]*255)},{int(rgb[1]*255)},{int(rgb[2]*255)},{alpha})'
+                            
+                        except (ValueError, KeyError):
+                            # Fallback to a default color
+                            return f'rgba(128,128,128,{alpha})'  # Gray fallback
+
+                    # Add traces for each facet and hue
+                    for i_row, row_val in enumerate(facet_row_vals):
+                        for i_col, col_val in enumerate(facet_col_vals):
+                            row_idx = i_row + 1
+                            col_idx = i_col + 1
+
+                            # Filter data by facet values
+                            sub_data = plot_data.copy()
+                            if facet_row_used:
+                                sub_data = sub_data[sub_data[facet_row_used] == row_val]
+                            if facet_col_used:
+                                sub_data = sub_data[sub_data[facet_col_used] == col_val]
+
+                            if sub_data.empty:
+                                continue
+
+                            for hue_val in hue_values:
+                                # Filter subset by hue
+                                subset = sub_data.copy()
+                                if hue_used and hue_used != var_x:
+                                    subset = subset[subset[hue_used] == hue_val]
+
+                                if subset.empty:
+                                    continue
+
+                                # Get line color for this hue
+                                line_color = color_map[hue_val]
+
+                                if time_series:
+                                    # Validate var_x is object (e.g., date) and var_y is numerical
+                                    is_object = False
+                                    if isinstance(plot_data[var_x].dtype, pd.CategoricalDtype):
+                                        # For categorical columns, check the dtype of the categories
+                                        if plot_data[var_x].cat.categories.dtype.name == 'object':
+                                            is_object = True
+                                    else:
+                                        # For non-categorical columns, check the dtype directly
+                                        if plot_data[var_x].dtype.name == 'object':
+                                            is_object = True
+
+                                    if not is_object:
+                                        st.warning(f"Time series mode requires '{var_x}' to be an object column (e.g., dates).")
+                                        continue
+                                    if not np.issubdtype(plot_data[var_y].dtype, np.number):
+                                        st.warning(f"Time series mode requires '{var_y}' to be a numerical column.")
+                                        continue
+
+                                    # Plot raw time series data without sorting
+                                    scatter_kwargs = dict(
+                                        x=subset[var_x],
+                                        y=subset[var_y],
+                                        mode='lines',
+                                        name=str(hue_val) if hue_val else "Line",
+                                        legendgroup=str(hue_val) if hue_val else None,
+                                        marker=dict(size=6, color=line_color),
+                                        line=dict(color=line_color),
+                                        showlegend=(row_idx == 1 and col_idx == 1)
+                                    )
+                                else:
+                                    # Prepare grouping columns (only include non-None columns, avoid hue if same as var_x)
+                                    group_cols = [var_x]
+                                    if hue_used and hue_used != var_x:
+                                        group_cols.append(hue_used)
+                                    if facet_col_used:
+                                        group_cols.append(facet_col_used)
+                                    if facet_row_used:
+                                        group_cols.append(facet_row_used)
+
+                                    # Group by selected columns and aggregate mean, std, and count
+                                    grouped = plot_data.groupby(group_cols)[var_y].agg(['mean', 'std', 'count']).reset_index()
+
+                                    # Filter grouped data for this facet and hue
+                                    sub = grouped.copy()
+                                    if hue_used and hue_used != var_x:
+                                        sub = sub[sub[hue_used] == hue_val]
+                                    if facet_row_used:
+                                        sub = sub[sub[facet_row_used] == row_val]
+                                    if facet_col_used:
+                                        sub = sub[sub[facet_col_used] == col_val]
+
+                                    if sub.empty or sub['count'].iloc[0] < 2:  # Skip if empty or insufficient sample size
+                                        continue
+
+                                    # Calculate confidence intervals using t.interval with selected CI level
+                                    alpha = 1 - ci_level_value
+                                    sub['se'] = sub['std'] / np.sqrt(sub['count'])  # Standard error
+                                    sub['ci_lower'], sub['ci_upper'] = t.interval(
+                                        ci_level_value,
+                                        sub['count'] - 1,
+                                        loc=sub['mean'],
+                                        scale=sub['se']
+                                    )
+                                    # CI half-width for plotting (symmetric CI)
+                                    sub['ci'] = (sub['ci_upper'] - sub['ci_lower']) / 2
+
+                                    # Plot line with error bars if band_interval is enabled
+                                    scatter_kwargs = dict(
+                                        x=sub[var_x],
+                                        y=sub['mean'],
+                                        mode='lines+markers',
+                                        name=str(hue_val) if hue_val else "Line",
+                                        legendgroup=str(hue_val) if hue_val else None,
+                                        marker=dict(size=6, color=line_color),
+                                        line=dict(color=line_color),
+                                        showlegend=(row_idx == 1 and col_idx == 1)
+                                    )
+                                    if band_interval:
+                                        scatter_kwargs['error_y'] = dict(
+                                            type='data',
+                                            symmetric=True,
+                                            array=sub['ci'],
+                                            thickness=1.5,
+                                            width=5,  # Width of the error bar caps
+                                            color=line_color
+                                        )
+
+                                fig.add_trace(go.Scatter(**scatter_kwargs), row=row_idx, col=col_idx)
+
+                    # Update layout with selected CI level in title
+                    fig.update_layout(
+                        width=1000,
+                        height=400 * n_rows,
+                        title=f"{'Time Series ' if time_series else ''}Lineplot: {var_y} vs {var_x}" + (f" with {ci_level} CI" if not time_series else ""),
+                        xaxis_title=var_x,
+                        yaxis_title=var_y,
+                        legend_title=hue_used if hue_used else None,
+                        showlegend=True
+                    )
+
+                    # Render plot in a single placeholder
+                    plot_placeholder = st.empty()
+                    plot_placeholder.plotly_chart(fig, use_container_width=True, key=f"lineplot_{var_x}_{var_y}_{hue_used}")
 
             # --- Ridges sometime are nice ---
             elif plot_type == 'ridges':
@@ -1835,12 +2128,204 @@ def visualization():
     # Render the plot if data is available
     if not data.empty:
         render_plot()
+        st.markdown(
+            """
+            <hr style="margin-top:2em;margin-bottom:1em;">
+            <div style="text-align: center; color: gray; font-size: 0.9em;">
+            Explore. Understand. Inspire. 🚀 | Powered by Streamlit + Plotly.
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
     else:
         st.warning("The dataset is empty after preprocessing. Please check your data or selections in the Home section.")
 
+def about():
+
+    with st.sidebar:
+        st.markdown("""
+        ### ℹ️ About this App
+
+        Explore your datasets **interactively**:
+
+        - 📊 Create rich visualizations (histograms, boxplots, density plots, regressions).
+        - 🧹 Process data (filter, melt, create date features, subsample).
+        - 🧩 Analyze missing values (matrix, bars, heatmap, dendrogram).
+        - 🎛️ Customize plots with hue, facetting, category orders, and more.
+        - 💾 Download processed data easily.
+
+        Built with **Streamlit** and **Plotly** for fast and flexible **data exploration**!
+        """)
+
+    st.subheader("📖 About This App")
+
+    with st.expander("ℹ️ User manual", expanded=False):
+        st.markdown("""
+        ## 📘 Manual: Interactive Data Visualization App
+
+        ### 1. 📂 Uploading and Preparing Data
+
+        ➔ **Step 1. Upload Your CSV**  
+        📎 Go to the Home section.  
+        ➡️ Click: **Upload CSV** and select your dataset.  
+        🖼️ *[Insert Screenshot: Upload CSV]*
+
+        ➔ **Step 2. Review and Select Columns**  
+        ✅ After upload:  
+        - Review column types (Numeric/Categorical).
+        - Select columns to keep.  
+        🖼️ *[Insert Screenshot: Column Overview and Selection]*
+
+        ➔ **Step 3. Assign Variable Types**  
+        ⚙️ Assign manually:  
+        - Numeric variables  
+        - Categorical variables  
+        🖼️ *[Insert Screenshot: Assign Variable Types]*
+
+        ➔ **Step 4. Optional Preprocessing**  
+        - Subsample (% of data)  
+        - Extract Date Features (Year, Month, Day, Hour)  
+        - Melt Data (reshape wide to long)  
+        🖼️ *[Insert Screenshot: Subsampling / Date Features / Melting Options]*
+
+        ➔ **Step 5. Preview and Download**  
+        📄 Preview the processed dataset.  
+        💾 Download your cleaned CSV.  
+        🖼️ *[Insert Screenshot: Preview and Download Button]*
+
+        ---
+
+        ### 2. 📊 Visualization Options
+
+        | Plot Type | Purpose |
+        |:---|:---|
+        | 📊 Bars | Bar plots or time-indexed bars. |
+        | 📉 Histogram | Distribution of numerical variables. |
+        | 🌈 Density 1 | Univariate density plots (layer/stacked). |
+        | 🌐 Density 2 | 2D Density (Histograms or Contours). |
+        | 🎁 Boxes | Boxplots, Lineplots, Violin plots. |
+        | 🏔️ Ridgeplots | Density ridges by categories or numeric. |
+        | 📈 Regression | Scatter + Regression lines + Confidence bands. |
+        | 🧩 Pairplots | Scatter matrix with KDE diagonals. |
+        | ❔ Missingno | Missing data patterns visualization. |
+
+        🖼️ *[Insert Screenshot: Plot Type Selection]*
+
+        ---
+
+        ### 3. ⚙️ Controls and Customization
+
+        - **X Variable**: Variable for X-axis.
+        - **Y Variable**: Variable for Y-axis (if needed).
+        - **Hue (Color)**: Color split (optional).
+        - **Facet Column / Row**: Create multi-panel plots.
+
+        🔧 **Plot-specific Settings**:
+        - Histograms: Step / Bar / Layer / Stack
+        - Densities: Cumulative / Normalize
+        - Boxplots/Violins: Swarm points
+        - Lineplots: Confidence bands ±1 std
+        - Regression: Polynomial orders (1, 2, 3) and CI (68%, 90%, 95%, 99%)
+
+        🔠 **Custom Order**:
+        - Sort categories (X, Hue, Facet) manually.
+
+        🖼️ *[Insert Screenshot: Sidebar Controls]*
+
+        ---
+
+        ### 4. 🧩 Special Behaviors
+
+        🛡️ **Auto Handling**:
+        - Too many categories (>100): Falls back to numeric ridges.
+
+        🛠️ **Missing Data Tools**:
+        - Matrix view of missingness
+        - Missingness correlation heatmap
+        - Dendrogram based on missing patterns
+
+        🖼️ *[Insert Screenshot: Missing Data Visualizations]*
+
+        ---
+
+        ### 5. 🚀 Tips for Best Use
+
+        - 📈 Start with Histograms and Densities to understand distributions.
+        - 🎯 Keep Facets manageable (no more than 5-10 categories).
+        - 🧹 Use Missing Data Heatmaps to find important patterns.
+        - 🔠 Use Custom Ordering for ordinal variables (months, years, etc).
+        - 💾 Download your cleaned dataset after transformations.
+
+        ---
+
+        ### ✨ End of Manual
+
+        If needed, re-upload your dataset anytime to start fresh.  
+        _Enjoy exploring your data visually! 🎨_
+        """)
+
+    st.markdown("""
+Welcome to the **Interactive Data Visualization App**!  
+A powerful and flexible tool to explore, preprocess, and visualize your datasets easily.
+
+---
+
+### 🔥 Key Features
+
+- **Data Upload and Preprocessing**
+  - Upload CSV files.
+  - Assign variable types (numeric, categorical).
+  - Subsample data randomly.
+  - Extract date features (Year, Month, Day, Hour).
+  - Reshape datasets with melting.
+  - Download the processed dataset.
+
+- **Visualizations**
+  - **Univariate**: Histograms, KDE plots, Boxplots, Violin plots.
+  - **Bivariate**: Scatter plots, Regression plots with confidence intervals.
+  - **Multivariate**: Pairplots, Ridgeplots, Heatmaps.
+  - **Missing Data**: Visualize missingness, correlations, dendrograms.
+
+- **Advanced Controls**
+  - Custom order for categorical variables (X, Hue, Facets).
+  - Faceting by row and column.
+  - Optional swarm overlay for boxplots and violins.
+  - Display statistical bands (±1 std) in line plots.
+  - Cumulative and normalized density options.
+
+- **Dynamic Behavior**
+  - Automatically adjusts when only numeric or only categorical data is present.
+  - Fallback strategies when too many categories (>100) are detected.
+  - Responsive and interactive plotting with Plotly.
+
+
+### 🚀 Designed For
+
+- **Exploratory Data Analysis (EDA)**
+- **Data quality assessment** (missing data structures)
+- **Educational projects** in Data Science and Statistics
+- **Quick visualization prototyping**
+
+
+### 🌟 Why This App?
+
+- *Every dataset tells a story — make it a good one!*
+
+### ⚠️ Important Note
+
+- 🛠️ **This app is still under active development and may contain bugs.**
+
+- Some functionalities (especially **complex faceting** and **dynamic interactions**) might produce unexpected behavior under edge cases (e.g., too many categories, missing values, duplicated variables in facets).
+
+- Please **reload** the page if the app becomes unstable, and **re-upload your dataset** for a fresh start. 📂✨
+
+- Your feedback is welcome to continue improving it! 🚀
+
+    """)
+
 # --- MAIN ROUTING ---
 def main():
-    section = st.sidebar.radio("Select Section", ["Home", "Missing Data Imputation", "Visualization"])
+    section = st.sidebar.radio("Select Section", ["Home", "Missing Data Imputation", "Visualization", "About"])
 
     if section == "Home":
         home()
@@ -1848,6 +2333,9 @@ def main():
         missing_data_imputation()
     elif section == "Visualization":
         visualization()
+    elif section == "About":
+        about()
+
 
 # --- Run the app ---
 if __name__ == "__main__":
