@@ -331,6 +331,7 @@ def visualization():
             import numpy as np
             import plotly.graph_objects as go
             import plotly.express as px
+            import pandas as pd
 
             data_c = data.drop(data.columns[data.nunique() == 1], axis=1)
             corr_matrix = data_c.select_dtypes(include=np.number).corr()
@@ -341,6 +342,7 @@ def visualization():
         elif plot_type == "clustermap":
             import numpy as np
             import plotly.graph_objects as go
+            import pandas as pd
 
             z_score = st.sidebar.selectbox("Z-Score", [None, 0, 1], index=0)
             standard_scale = st.sidebar.selectbox("Standard Scale", [None, 0, 1], index=0)
@@ -395,6 +397,7 @@ def visualization():
             import plotly.graph_objects as go
             from plotly.subplots import make_subplots
             from scipy.stats import gaussian_kde
+            import pandas as pd
 
 
             numeric_cols_list = list(data.select_dtypes(include='number').columns)
@@ -545,6 +548,7 @@ def visualization():
             import plotly.graph_objects as go
             from scipy.cluster.hierarchy import linkage, dendrogram
             import scipy.spatial.distance as ssd
+            import pandas as pd
 
             st.sidebar.subheader("Missing Data Visualization")
             tplot = st.sidebar.selectbox("Plot Type", ["matrix", "bars", "heatmap"])
