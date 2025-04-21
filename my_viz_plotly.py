@@ -23,6 +23,14 @@ def home():
 
     uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 
+    st.markdown("""
+    ⚠️ **Important:**  
+    Your CSV file must be comma-separated, use a dot (`.`) as the decimal separator, and must not include thousands separators or special symbols.  
+    Be aware that Excel often modifies CSV files when saving. Please ensure your file is as standard as possible before uploading.
+    """)
+
+
+
     if uploaded_file:
         # Define missing value representations
         na_values = ['', 'NA', 'N/A', 'na', 'n/a', 'NaN', 'nan', 'NULL', 'null', 'missing', '-', '--']
@@ -296,7 +304,7 @@ def visualization():
     PLOT_TYPES = [
         'bars', 'boxes', 'ridges', 'histogram', 'density 1', 'density 2', 
         'scatter', 'catplot', 'missingno', 'correlation', 'clustermap', 
-        'pairplot', 'regression'
+        'pairplot', 'regression', "heatmap"
     ]
 
     if not numeric_cols:
@@ -780,8 +788,8 @@ def visualization():
                 import plotly.express as px
                 import plotly.graph_objects as go
                 from plotly.subplots import make_subplots  # Moved to top to avoid UnboundLocalError
-                import pandas as pd
                 import numpy as np
+                import pandas as pd
 
                 # Setup columns
                 if categorical_cols:
@@ -1062,6 +1070,7 @@ def visualization():
                 import numpy as np
                 import plotly.express as px
                 import plotly.graph_objects as go
+                import pandas as pd
 
                 x_cols = data.columns if risk_it_all else categorical_cols
                 y_cols = data.columns if risk_it_all else numeric_cols
@@ -1399,6 +1408,7 @@ def visualization():
                 import plotly.graph_objects as go
                 from plotly.subplots import make_subplots
                 from scipy.stats import gaussian_kde
+                import pandas as pd
 
                 x_cols = data.columns if risk_it_all else categorical_cols
                 y_cols = data.columns if risk_it_all else numeric_cols
@@ -1581,6 +1591,7 @@ def visualization():
                 import numpy as np
                 import plotly.express as px
                 import plotly.graph_objects as go
+                import pandas as pd
 
                 # Variables depending on risk_it_all
                 x_cols = data.columns if risk_it_all else numeric_cols
@@ -1704,6 +1715,7 @@ def visualization():
                 import plotly.graph_objects as go
                 from plotly.subplots import make_subplots
                 from scipy.stats import gaussian_kde
+                import pandas as pd
 
                 x_cols = data.columns if risk_it_all else numeric_cols
                 cat_cols = data.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
@@ -1892,6 +1904,7 @@ def visualization():
                 import plotly.express as px
                 import plotly.graph_objects as go
                 from plotly.subplots import make_subplots
+                import pandas as pd
 
                 # Define available columns depending on risk_it_all option
                 x_cols = data.columns if risk_it_all else numeric_cols
@@ -1983,6 +1996,7 @@ def visualization():
                 import plotly.express as px
                 import plotly.graph_objects as go
                 from plotly.subplots import make_subplots
+                import pandas as pd
 
                 x_cols = data.columns if risk_it_all else categorical_cols
                 y_cols = data.columns if risk_it_all else categorical_cols
@@ -2034,6 +2048,7 @@ def visualization():
                 import plotly.express as px
                 import plotly.graph_objects as go
                 import statsmodels.api as sm
+                import pandas as pd
 
                 x_cols = data.columns if risk_it_all else numeric_cols
                 y_cols = data.columns if risk_it_all else numeric_cols
@@ -2125,6 +2140,151 @@ def visualization():
 
                 st.plotly_chart(fig, use_container_width=True)
 
+            # Heatmap Numerical Section
+            if plot_type == 'heatmap':
+                import plotly.express as px
+                import pandas as pd
+                import numpy as np
+
+                # Setup columns
+                all_cols = data.columns.tolist()
+                cat_cols = [None] + [col for col in all_cols if not pd.api.types.is_numeric_dtype(data[col]) or isinstance(data[col].dtype, pd.CategoricalDtype)]
+                num_cols = [col for col in all_cols if pd.api.types.is_numeric_dtype(data[col])]
+
+                # Controls
+                st.sidebar.header("Heatmap Numerical Options")
+                cat_var = st.sidebar.selectbox(
+                    "Select Categorical Variable (Optional)",
+                    cat_cols,
+                    index=0,
+                    help="Choose a categorical variable to use as rows in the heatmap. Leave as None to plot all numerical columns as rows."
+                )
+
+                num_var = None
+                if cat_var is not None:
+                    if not num_cols:
+                        st.warning("No numerical columns available to select as the numerical variable.")
+                        return
+                    default_num = num_cols[0]
+                    num_var = st.sidebar.selectbox(
+                        "Select Numerical Variable (Required)",
+                        num_cols,
+                        index=num_cols.index(default_num),
+                        help="Choose a numerical variable to use as values in the heatmap."
+                    )
+
+                colormap = st.sidebar.selectbox(
+                    "Select Colormap",
+                    ["Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Blues", "Reds", "Greens"],
+                    index=0,
+                    help="Choose a colormap for the heatmap visualization."
+                )
+
+                plot_data = data.copy()
+
+                # Custom Ordering for Categorical Variable (Added)
+                if cat_var is not None and cat_var in plot_data.columns:
+                    custom_order = st.sidebar.multiselect(
+                        f"Custom Order for {cat_var}",
+                        options=plot_data[cat_var].dropna().unique().tolist(),
+                        default=sorted(plot_data[cat_var].dropna().unique().tolist()),
+                        help=f"Select the order of categories for {cat_var} to display in the heatmap."
+                    )
+                    if custom_order:  # Only apply custom order if the user has made a selection
+                        plot_data[cat_var] = pd.Categorical(plot_data[cat_var], categories=custom_order, ordered=True)
+
+                # Debug: Inspect plot_data shape and columns
+                #st.write(f"Debug: plot_data shape: {plot_data.shape}")
+                #st.write(f"Debug: plot_data columns: {plot_data.columns.tolist()}")
+
+                # Prepare heatmap data
+                if cat_var is None:
+                    # Case 1: All columns numerical
+                    # Check if all columns are numerical
+                    if not all(pd.api.types.is_numeric_dtype(plot_data[col]) for col in plot_data.columns):
+                        st.warning("All columns must be numerical for Heatmap Numerical mode without a categorical variable.")
+                        return
+
+                    # Select only numerical columns (ensures consistency)
+                    numerical_data = plot_data.select_dtypes(include=np.number)
+
+                    # Debug: Inspect numerical_data shape and columns
+                    #st.write(f"Debug: numerical_data shape: {numerical_data.shape}")
+                    #st.write(f"Debug: numerical_data columns: {numerical_data.columns.tolist()}")
+
+                    # Transpose the DataFrame: columns become rows, rows become columns
+                    heatmap_data = numerical_data.transpose()
+                    x_labels = [f"data{i}" for i in range(len(numerical_data))]
+                    y_labels = numerical_data.columns.tolist()
+                    title = "Heatmap Numerical: Observations vs Variables"
+
+                    # Debug: Inspect heatmap_data shape
+                    #st.write(f"Debug: heatmap_data shape after transpose: {heatmap_data.shape}")
+
+                    # Calculate dynamic height based on number of rows (columns in original data)
+                    num_rows = len(y_labels)  # Number of numerical columns (rows in heatmap)
+                    base_height = 600
+                    height = max(base_height, num_rows * 20)  # Scale height: at least 20 pixels per row
+
+                else:
+                    # Case 2: Categorical variable for rows, numerical variable for columns
+                    if num_var is None:
+                        st.warning("Please select a numerical variable for Heatmap Numerical mode.")
+                        return
+
+                    if not pd.api.types.is_numeric_dtype(plot_data[num_var]):
+                        st.warning(f"Selected numerical variable '{num_var}' must be numerical.")
+                        return
+
+                    # Check if cat_var is categorical or object
+                    is_categorical = False
+                    if isinstance(plot_data[cat_var].dtype, pd.CategoricalDtype):
+                        is_categorical = True
+                    elif plot_data[cat_var].dtype.name == 'object':
+                        is_categorical = True
+
+                    if not is_categorical:
+                        st.warning(f"Selected categorical variable '{cat_var}' must be categorical or object type.")
+                        return
+
+                    # Add a temporary observation ID column to use as pivot columns
+                    plot_data['obs_id'] = [f"Obs {i}" for i in range(len(plot_data))]
+
+                    # Pivot the data: cat_var as rows, obs_id as columns, num_var as values
+                    heatmap_data = plot_data.pivot(columns='obs_id', values=num_var, index=cat_var)
+                    x_labels = heatmap_data.columns.tolist()  # Observation IDs
+                    y_labels = heatmap_data.index.tolist()   # Unique values of cat_var, ordered by custom_order if set
+                    title = f"Heatmap Numerical: {cat_var} vs Observations"
+
+                    # Debug: Inspect heatmap_data shape
+                    #st.write(f"Debug: heatmap_data shape after pivot: {heatmap_data.shape}")
+
+                    # Calculate dynamic height based on number of rows (unique cat_var values)
+                    num_rows = len(y_labels)  # Number of unique categorical values (rows in heatmap)
+                    base_height = 600
+                    height = max(base_height, num_rows * 20)  # Scale height: at least 20 pixels per row
+
+                # Plot the heatmap
+                fig = px.imshow(
+                    heatmap_data,
+                    labels=dict(x="Observations", y="Variables" if cat_var is None else cat_var, color="Value"),
+                    x=x_labels,
+                    y=y_labels,
+                    color_continuous_scale=colormap,
+                    title=title,
+                    width=800,
+                    height=height,
+                    aspect='auto'  # Prevent Plotly from enforcing a square aspect ratio
+                )
+
+                # Update layout to ensure full visibility
+                fig.update_layout(
+                    margin=dict(l=50, r=50, t=100, b=50),  # Adjust margins for better visibility
+                    yaxis=dict(tickfont=dict(size=10)),    # Adjust font size for y-axis labels
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
     # Render the plot if data is available
     if not data.empty:
         render_plot()
@@ -2159,11 +2319,16 @@ def about():
 
     st.subheader("📖 About This App")
 
+    st.markdown("""Welcome to the **Interactive Data Visualization App**!  
+    A powerful and flexible tool to explore, preprocess, and visualize your datasets easily.""")
+
+
+
     with st.expander("ℹ️ User manual", expanded=False):
         st.markdown("""
-        ## 📘 Manual: Interactive Data Visualization App
+        ### 📘 Manual: Interactive Data Visualization App
 
-        ### 1. 📂 Uploading and Preparing Data
+        #### 1. 📂 Uploading and Preparing Data
 
         ➔ **Step 1. Upload Your CSV**  
         📎 Go to the Home section.  
@@ -2193,9 +2358,12 @@ def about():
         💾 Download your cleaned CSV.  
         🖼️ *[Insert Screenshot: Preview and Download Button]*
 
+        ➔ **Recommendation:** not all operations can be applied at once, try this:  
+        ⚠️ Load ➔ apply operation ➔ check preview ➔ download ➔ repeat.
+
         ---
 
-        ### 2. 📊 Visualization Options
+        #### 2. 📊 Visualization Options
 
         | Plot Type | Purpose |
         |:---|:---|
@@ -2213,7 +2381,7 @@ def about():
 
         ---
 
-        ### 3. ⚙️ Controls and Customization
+        #### 3. ⚙️ Controls and Customization
 
         - **X Variable**: Variable for X-axis.
         - **Y Variable**: Variable for Y-axis (if needed).
@@ -2234,7 +2402,7 @@ def about():
 
         ---
 
-        ### 4. 🧩 Special Behaviors
+        #### 4. 🧩 Special Behaviors
 
         🛡️ **Auto Handling**:
         - Too many categories (>100): Falls back to numeric ridges.
@@ -2248,7 +2416,7 @@ def about():
 
         ---
 
-        ### 5. 🚀 Tips for Best Use
+        #### 5. 🚀 Tips for Best Use
 
         - 📈 Start with Histograms and Densities to understand distributions.
         - 🎯 Keep Facets manageable (no more than 5-10 categories).
@@ -2258,17 +2426,13 @@ def about():
 
         ---
 
-        ### ✨ End of Manual
+        #### ✨ End of Manual
 
         If needed, re-upload your dataset anytime to start fresh.  
         _Enjoy exploring your data visually! 🎨_
         """)
 
     st.markdown("""
-Welcome to the **Interactive Data Visualization App**!  
-A powerful and flexible tool to explore, preprocess, and visualize your datasets easily.
-
----
 
 ### 🔥 Key Features
 
@@ -2280,11 +2444,20 @@ A powerful and flexible tool to explore, preprocess, and visualize your datasets
   - Reshape datasets with melting.
   - Download the processed dataset.
 
+- **Data Requirements**:
+  - Supports both categorical and numerical data.
+  - Time series mode requires an object column (e.g., dates) for the x-axis and a numerical column for the y-axis.
+  - Raw Heatmap mode requires either all numerical columns or a categorical and numerical variable pair.
+  - Warnings are displayed if data types don’t meet requirements for specific modes.
+
 - **Visualizations**
   - **Univariate**: Histograms, KDE plots, Boxplots, Violin plots.
   - **Bivariate**: Scatter plots, Regression plots with confidence intervals.
   - **Multivariate**: Pairplots, Ridgeplots, Heatmaps.
   - **Missing Data**: Visualize missingness, correlations, dendrograms.
+
+- **Time Series Support (very limited)**:
+  - Enable the "Time is here" option in line plots and bar plots to plot raw time series data (e.g., dates on the x-axis and numerical values on the y-axis) without aggregation or sorting.
 
 - **Advanced Controls**
   - Custom order for categorical variables (X, Hue, Facets).
@@ -2297,7 +2470,6 @@ A powerful and flexible tool to explore, preprocess, and visualize your datasets
   - Automatically adjusts when only numeric or only categorical data is present.
   - Fallback strategies when too many categories (>100) are detected.
   - Responsive and interactive plotting with Plotly.
-
 
 ### 🚀 Designed For
 
