@@ -6,3 +6,4 @@ missingno
 plotly
 scipy
 scikit-learn
+statsmodels
