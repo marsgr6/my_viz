@@ -2645,69 +2645,69 @@ def about():
 
         ---
 
-        ### Examples: check the plots below and the configuration in the left panel:
+        ### Examples: load the suggested datasets, check the plots below and the configuration in the left panel:
 
-        - Bars:
+        - Bars (use [tips dataset](https://github.com/marsgr6/r-scripts/blob/master/data/viz_data/Tips.csv)):
 
         ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/bars_myvp.png)
 
-        - Boxes:
+        - Boxes (use [tips dataset](https://github.com/marsgr6/r-scripts/blob/master/data/viz_data/Tips.csv)):
 
         ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/boxes_myvp.png)
 
-        - Ridges:
+        - Ridges (use [tips dataset](https://github.com/marsgr6/r-scripts/blob/master/data/viz_data/Tips.csv)):
 
         ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/ridges_myvp.png)
 
-        - Histograms:
+        - Histograms (use [tips dataset](https://github.com/marsgr6/r-scripts/blob/master/data/viz_data/Tips.csv)):
 
         ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/hist_myvp.png)
 
-        - Density 1:
+        - Density 1 (use [tips dataset](https://github.com/marsgr6/r-scripts/blob/master/data/viz_data/Tips.csv)):
 
         ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/kde_myvp.png)
 
-        - Density 2:
+        - Density 2 (use [tips dataset](https://github.com/marsgr6/r-scripts/blob/master/data/viz_data/Tips.csv)):
 
         ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/kde2_myvp.png)
 
-        - Scatter:
+        - Scatter (use [tips dataset](https://github.com/marsgr6/r-scripts/blob/master/data/viz_data/Tips.csv)):
 
         ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/scatter_myvp.png)
 
-        - Missing values (missingno):
+        - Missing values - missingno ([penguins dataset](https://github.com/marsgr6/r-scripts/blob/master/data/viz_data/Penguins.csv)):
 
         ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/missingno_myvp.png)
 
-        - Cluster map (similar to correlation map, but variables are grouped by correlation):
+        - Cluster map (similar to correlation map, but variables are grouped by correlation, use [penguins dataset](https://github.com/marsgr6/r-scripts/blob/master/data/viz_data/Penguins.csv)):
 
         ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/clustermap_myvp.png)
 
-        - Pairplot:
+        - Pairplot (use [penguins dataset](https://github.com/marsgr6/r-scripts/blob/master/data/viz_data/Penguins.csv)):
 
         ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/pair_myvp.png)
 
-        - Regression:
+        - Regression ([penguins dataset](https://github.com/marsgr6/r-scripts/blob/master/data/viz_data/Penguins.csv)):
 
         ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/reg_myvp.png)
 
-        - Ridges (all columns numerical):
+        - Ridges (all columns numerical, remove columns in preprocessing from the [time series dataset](https://github.com/marsgr6/r-scripts/blob/master/data/viz_data/ts_data_precipitation.csv)):
 
         ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/ridges_num_myvp.png)
 
-        - Heatmap (all numerical columns):
+        - Heatmap (all columns numerical, remove columns in preprocessing from the [time series dataset](https://github.com/marsgr6/r-scripts/blob/master/data/viz_data/ts_data_precipitation.csv)):
 
         ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/heatnum_myvp.png)
 
-        - Time series as bars:
+        - Time series as bars (keep column FECHA from the [time series dataset](https://github.com/marsgr6/r-scripts/blob/master/data/viz_data/ts_data_precipitation.csv)):
 
         ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/barsts_myvp.png)
 
-        - Time series as lines:
+        - Time series as lines (keep column FECHA from the [time series dataset](https://github.com/marsgr6/r-scripts/blob/master/data/viz_data/ts_data_precipitation.csv)):
 
         ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/linests_myvp.png)
 
-        - Catplot:
+        - Catplot (use [tips dataset](https://github.com/marsgr6/r-scripts/blob/master/data/viz_data/Tips.csv)):
 
         ![](https://raw.githubusercontent.com/marsgr6/r-scripts/refs/heads/master/imgs/catplot_myvp.png)
 
