@@ -11,17 +11,91 @@ from scipy.stats import gaussian_kde
 from scipy.cluster import hierarchy
 from sklearn.impute import KNNImputer
 import warnings
+import requests
+import io
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
 
 st.set_page_config(layout="wide")
 
+# --- Helper Function to Apply Operations (Used When Tracking is Enabled) ---
+def apply_operations(raw_df, operations):
+    df = raw_df.copy()
+    for op in operations:
+        try:
+            if op["type"] == "select_columns":
+                df = df[op["columns"]]
+            elif op["type"] == "cast_types":
+                for col in op["numeric_cols"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                for col in op["categorical_cols"]:
+                    if col in df.columns:
+                        df[col] = df[col].astype(str).replace('nan', np.nan)
+            elif op["type"] == "subsample":
+                frac = op["sample_pct"] / 100
+                df = df.sample(frac=frac, random_state=42)
+            elif op["type"] == "melt":
+                value_vars = [col for col in df.columns if col not in op["id_vars"]]
+                df = pd.melt(
+                    df,
+                    id_vars=op["id_vars"],
+                    value_vars=value_vars,
+                    var_name="variable",
+                    value_name="value"
+                )
+            elif op["type"] == "date_features":
+                df[op["date_column"]] = pd.to_datetime(df[op["date_column"]], errors="coerce", dayfirst=op["dayfirst"])
+                df["Year"] = df[op["date_column"]].dt.year
+                df["Month"] = df[op["date_column"]].dt.month
+                df["Day"] = df[op["date_column"]].dt.day
+                df["DayOfWeek"] = df[op["date_column"]].dt.dayofweek
+                df["Hour"] = df[op["date_column"]].dt.hour
+                df[op["date_column"]] = df[op["date_column"]].astype(str)
+            elif op["type"] == "remove_nan":
+                df = df.dropna()
+            elif op["type"] == "impute":
+                numeric_cols = df.select_dtypes(include=["float64", "int64"]).columns.tolist()
+                categorical_cols = df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
+                numeric_df = df[numeric_cols].copy()
+                categorical_df = df[categorical_cols].copy()
+                # Numeric: KNN Imputation
+                if numeric_cols:
+                    imputer = KNNImputer(n_neighbors=5, weights="uniform", metric="nan_euclidean")
+                    imputed_numeric = imputer.fit_transform(numeric_df)
+                    imputed_numeric_df = pd.DataFrame(imputed_numeric, columns=numeric_cols, index=numeric_df.index)
+                else:
+                    imputed_numeric_df = pd.DataFrame(index=df.index)
+                # Categorical: Mode Imputation
+                if categorical_cols:
+                    for col in categorical_cols:
+                        most_frequent = categorical_df[col].mode()
+                        if not most_frequent.empty:
+                            categorical_df[col].fillna(most_frequent[0], inplace=True)
+                imputed_categorical_df = categorical_df
+                # Combine and maintain column order
+                df = pd.concat([imputed_numeric_df, imputed_categorical_df], axis=1)
+                df = df[df.columns]
+        except Exception as e:
+            st.error(f"Error applying operation {op['type']}: {e}")
+            return df
+    return df
+
+# --- HOME SECTION ---
 # --- HOME SECTION ---
 def home():
     st.subheader("🏠 Home: Data Upload & Selection")
 
     uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
+
+    # GitHub link input and load button
+    st.markdown("**Or load a CSV from a GitHub link:**")
+    github_link = st.text_input(
+        "Paste the GitHub link to your CSV file",
+        placeholder="e.g., https://raw.githubusercontent.com/marsgr6/r-scripts/master/data/viz_data/sample.csv"
+    )
+    load_from_github = st.button("Load from GitHub")
 
     st.markdown("""
     ⚠️ **Important:**  
@@ -32,132 +106,313 @@ def home():
     [Example Datasets on GitHub](https://github.com/marsgr6/r-scripts/tree/master/data/viz_data)
     """)
 
+    # Initialize session state for operations if not present
+    if "operations" not in st.session_state:
+        st.session_state["operations"] = []
+    if "enable_operation_tracking" not in st.session_state:
+        st.session_state["enable_operation_tracking"] = False
+    if "current_numeric_cols" not in st.session_state:
+        st.session_state["current_numeric_cols"] = []
+    if "current_categorical_cols" not in st.session_state:
+        st.session_state["current_categorical_cols"] = []
+
+    # Operation tracking toggle
+    st.subheader("⚙️ Operation Tracking Settings")
+    st.session_state["enable_operation_tracking"] = st.checkbox(
+        "Enable Operation Tracking for Undo (May Slow Down for Large Datasets)",
+        value=False,
+        help="When enabled, operations are tracked, allowing you to undo them. This may slow down the app for large datasets as all operations are reapplied each time."
+    )
+    if st.session_state["enable_operation_tracking"]:
+        st.warning("Operation tracking is enabled. This may impact performance for large datasets as all operations will be reapplied after each change.")
+
+    # Reset button (always available to clear session state)
+    if st.button("Reset All"):
+        st.session_state["operations"] = []
+        st.session_state.pop("raw_df", None)
+        st.session_state.pop("filtered_df", None)
+        st.session_state.pop("current_numeric_cols", None)
+        st.session_state.pop("current_categorical_cols", None)
+        st.session_state.pop("last_uploaded_file", None)
+        st.session_state.pop("is_imputed", None)
+        st.session_state.pop("imputed_df", None)
+        st.session_state.pop("enable_operation_tracking", None)
+        st.success("Session reset successfully. Please upload a new file.")
+        return
+
+    # Undo last operation button (only shown if tracking is enabled)
+    if st.session_state["enable_operation_tracking"] and st.session_state["operations"]:
+        if st.button("Undo Last Operation"):
+            st.session_state["operations"].pop()
+            if st.session_state["operations"] and "raw_df" in st.session_state:
+                st.session_state["filtered_df"] = apply_operations(st.session_state["raw_df"], st.session_state["operations"])
+                st.session_state["current_numeric_cols"] = st.session_state["filtered_df"].select_dtypes(include="number").columns.tolist()
+                st.session_state["current_categorical_cols"] = st.session_state["filtered_df"].select_dtypes(include=["object", "category"]).columns.tolist()
+                st.success("Last operation undone successfully!")
+            else:
+                st.session_state.pop("filtered_df", None)
+                st.session_state.pop("current_numeric_cols", None)
+                st.session_state.pop("current_categorical_cols", None)
+                st.info("No operations left to apply.")
+
+    # Load data from GitHub link if provided
+    data_loaded = False
+    if load_from_github and github_link:
+        try:
+            # Validate that the URL points to a CSV file
+            if not github_link.endswith('.csv'):
+                st.error("The provided link does not point to a CSV file. Please ensure the URL ends with '.csv'.")
+            else:
+                # Convert GitHub URL to raw URL if necessary (e.g., from github.com to raw.githubusercontent.com)
+                if "github.com" in github_link and "raw.githubusercontent.com" not in github_link:
+                    github_link = github_link.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
+
+                # Download and read the CSV
+                response = requests.get(github_link)
+                response.raise_for_status()  # Raise an exception for HTTP errors
+                csv_content = response.content.decode('utf-8')
+                raw_df = pd.read_csv(io.StringIO(csv_content), na_values=['', 'NA', 'N/A', 'na', 'n/a', 'NaN', 'nan', 'NULL', 'null', 'missing', '-', '--'], keep_default_na=True)
+                
+                # Reset session state when a new file is loaded
+                st.session_state["operations"] = []
+                st.session_state["last_uploaded_file"] = github_link
+                st.session_state.pop("filtered_df", None)
+                st.session_state.pop("current_numeric_cols", None)
+                st.session_state.pop("current_categorical_cols", None)
+                st.session_state.pop("is_imputed", None)
+                st.session_state.pop("imputed_df", None)
+
+                st.session_state["raw_df"] = raw_df.copy()
+                st.session_state["filtered_df"] = raw_df.copy()
+                st.session_state["current_numeric_cols"] = raw_df.select_dtypes(include="number").columns.tolist()
+                st.session_state["current_categorical_cols"] = raw_df.select_dtypes(include=["object", "category"]).columns.tolist()
+                st.success(f"CSV file successfully loaded from GitHub link: {github_link}")
+                data_loaded = True
+        except requests.exceptions.RequestException as e:
+            st.error(f"Failed to load CSV from GitHub link: {e}")
+        except pd.errors.EmptyDataError:
+            st.error("The CSV file is empty or invalid.")
+        except Exception as e:
+            st.error(f"An error occurred while loading the CSV: {e}")
+
+    # Load data from file uploader if provided
     if uploaded_file:
         # Define missing value representations
         na_values = ['', 'NA', 'N/A', 'na', 'n/a', 'NaN', 'nan', 'NULL', 'null', 'missing', '-', '--']
 
-        # --- Always reset the session when uploading a new file ---
+        # Reset session state when a new file is uploaded
         if "last_uploaded_file" not in st.session_state or uploaded_file.name != st.session_state["last_uploaded_file"]:
-            st.session_state.clear()
+            st.session_state["operations"] = []
             st.session_state["last_uploaded_file"] = uploaded_file.name
+            st.session_state.pop("filtered_df", None)
+            st.session_state.pop("current_numeric_cols", None)
+            st.session_state.pop("current_categorical_cols", None)
+            st.session_state.pop("is_imputed", None)
+            st.session_state.pop("imputed_df", None)
 
         # Read file
         raw_df = pd.read_csv(uploaded_file, na_values=na_values, keep_default_na=True)
         st.success(f"File '{uploaded_file.name}' successfully uploaded!")
+        st.session_state["raw_df"] = raw_df.copy()
 
-        # Set working copy
-        st.session_state["working_df"] = raw_df.copy()
-        df = st.session_state["working_df"]
+        # Initialize filtered_df if not present
+        if "filtered_df" not in st.session_state:
+            st.session_state["filtered_df"] = raw_df.copy()
+            st.session_state["current_numeric_cols"] = raw_df.select_dtypes(include="number").columns.tolist()
+            st.session_state["current_categorical_cols"] = raw_df.select_dtypes(include=["object", "category"]).columns.tolist()
+
+        data_loaded = True
+
+    # Proceed to operations only if data has been loaded (from either source)
+    if data_loaded and "filtered_df" in st.session_state:
+        df = st.session_state["filtered_df"].copy()
 
         # --- Column Selection ---
         st.subheader("🎯 Column Selection")
         selected_columns = st.multiselect(
-            "Select columns to keep", options=df.columns.tolist(), default=df.columns.tolist()
+            "Select columns to keep",
+            options=df.columns.tolist(),
+            default=df.columns.tolist(),
+            key="select_columns"
         )
-        df = df[selected_columns]
+        if st.button("Apply Column Selection"):
+            if selected_columns:
+                if st.session_state["enable_operation_tracking"]:
+                    # Add operation to the list and reapply all
+                    st.session_state["operations"].append({"type": "select_columns", "columns": selected_columns})
+                    df = apply_operations(st.session_state["raw_df"], st.session_state["operations"])
+                else:
+                    # Apply operation incrementally
+                    df = df[selected_columns]
+                st.session_state["filtered_df"] = df
+                st.session_state["current_numeric_cols"] = df.select_dtypes(include="number").columns.tolist()
+                st.session_state["current_categorical_cols"] = df.select_dtypes(include=["object", "category"]).columns.tolist()
+                st.success("Column selection applied successfully!")
+            else:
+                st.warning("Please select at least one column.")
 
         # --- Variable Types ---
         st.subheader("🔧 Assign Variable Types")
+        # Use current_numeric_cols as the default to avoid modifying widget state
         numeric_cols = st.multiselect(
             "Select Numeric Variables",
             options=df.columns.tolist(),
-            default=df.select_dtypes(include="number").columns.tolist()
+            default=st.session_state["current_numeric_cols"],
+            key="numeric_cols"
         )
+        # Use current_categorical_cols as the default to avoid modifying widget state
         categorical_cols = st.multiselect(
             "Select Categorical Variables",
             options=[col for col in df.columns if col not in numeric_cols],
-            default=df.select_dtypes(include=["object", "category"]).columns.tolist()
+            default=st.session_state["current_categorical_cols"],
+            key="categorical_cols"
         )
-
-        # Force type casting
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        for col in categorical_cols:
-            if col in df.columns:
-                df[col] = df[col].astype(str).replace('nan', np.nan)
+        if st.button("Apply Variable Types"):
+            if st.session_state["enable_operation_tracking"]:
+                # Add operation to the list and reapply all
+                st.session_state["operations"].append({
+                    "type": "cast_types",
+                    "numeric_cols": numeric_cols,
+                    "categorical_cols": categorical_cols
+                })
+                df = apply_operations(st.session_state["raw_df"], st.session_state["operations"])
+            else:
+                # Apply operation incrementally
+                for col in numeric_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                for col in categorical_cols:
+                    if col in df.columns:
+                        df[col] = df[col].astype(str).replace('nan', np.nan)
+            st.session_state["filtered_df"] = df
+            st.session_state["current_numeric_cols"] = df.select_dtypes(include="number").columns.tolist()
+            st.session_state["current_categorical_cols"] = df.select_dtypes(include=["object", "category"]).columns.tolist()
+            st.success("Variable types applied successfully!")
 
         # --- Random Subsampling ---
         st.subheader("🧪 Random Subsampling")
         sample_pct = st.slider(
-            "Select percentage of data to use", min_value=1, max_value=100, value=100
+            "Select percentage of data to use",
+            min_value=1,
+            max_value=100,
+            value=100,
+            key="sample_pct"
         )
-        if sample_pct < 100:
-            df = df.sample(frac=sample_pct / 100, random_state=42)
-            st.info(f"Dataset subsampled to {len(df)} rows.")
-
-        # Update working df after basic processing
-        st.session_state["working_df"] = df.copy()
+        if st.button("Apply Subsampling"):
+            if st.session_state["enable_operation_tracking"]:
+                # Add operation to the list and reapply all
+                st.session_state["operations"].append({"type": "subsample", "sample_pct": sample_pct})
+                df = apply_operations(st.session_state["raw_df"], st.session_state["operations"])
+            else:
+                # Apply operation incrementally
+                frac = sample_pct / 100
+                df = df.sample(frac=frac, random_state=42)
+            st.session_state["filtered_df"] = df
+            st.session_state["current_numeric_cols"] = df.select_dtypes(include="number").columns.tolist()
+            st.session_state["current_categorical_cols"] = df.select_dtypes(include=["object", "category"]).columns.tolist()
+            st.success(f"Dataset subsampled to {len(df)} rows.")
 
         # --- Melting Section ---
         st.subheader("🔥 Optional: Melt Data")
         id_vars = st.multiselect(
-            "Select ID Variables for Melting", options=df.columns.tolist(), key="melt_keys"
+            "Select ID Variables for Melting",
+            options=df.columns.tolist(),
+            key="melt_keys"
         )
         if st.button("Apply Melting"):
             if id_vars:
-                value_vars = [col for col in df.columns if col not in id_vars]
-                df = pd.melt(
-                    df, id_vars=id_vars, value_vars=value_vars,
-                    var_name="variable", value_name="value"
-                )
-                st.session_state["working_df"] = df.copy()
+                if st.session_state["enable_operation_tracking"]:
+                    # Add operation to the list and reapply all
+                    st.session_state["operations"].append({"type": "melt", "id_vars": id_vars})
+                    df = apply_operations(st.session_state["raw_df"], st.session_state["operations"])
+                else:
+                    # Apply operation incrementally
+                    value_vars = [col for col in df.columns if col not in id_vars]
+                    df = pd.melt(
+                        df,
+                        id_vars=id_vars,
+                        value_vars=value_vars,
+                        var_name="variable",
+                        value_name="value"
+                    )
+                st.session_state["filtered_df"] = df
+                st.session_state["current_numeric_cols"] = df.select_dtypes(include="number").columns.tolist()
+                st.session_state["current_categorical_cols"] = df.select_dtypes(include=["object", "category"]).columns.tolist()
                 st.success("Melting applied successfully!")
             else:
                 st.warning("Please select at least one ID variable before melting.")
 
         # --- Date Feature Engineering ---
         st.subheader("📅 Date Feature Engineering (Optional)")
-
         date_column = st.selectbox(
-            "Select Date Column to Extract Features (optional)", 
-            options=["None"] + df.columns.tolist(), 
-            index=0
+            "Select Date Column to Extract Features (optional)",
+            options=["None"] + df.columns.tolist(),
+            index=0,
+            key="date_column"
         )
-
         dayfirst_option = st.checkbox("Use Day First when Parsing Dates (e.g., 31/12/2023)", value=True)
-
-        parse_date_button = st.button("Parse Date and Create Features")
-
-        if parse_date_button and date_column != "None":
-            try:
-                df[date_column] = pd.to_datetime(df[date_column], errors="coerce", dayfirst=dayfirst_option)
-
-                df["Year"] = df[date_column].dt.year
-                df["Month"] = df[date_column].dt.month
-                df["Day"] = df[date_column].dt.day
-                df["DayOfWeek"] = df[date_column].dt.dayofweek
-                df["Hour"] = df[date_column].dt.hour
-                df[date_column] = df[date_column].astype(str)
-
-                st.session_state["working_df"] = df
+        if st.button("Parse Date and Create Features"):
+            if date_column != "None":
+                if st.session_state["enable_operation_tracking"]:
+                    # Add operation to the list and reapply all
+                    st.session_state["operations"].append({
+                        "type": "date_features",
+                        "date_column": date_column,
+                        "dayfirst": dayfirst_option
+                    })
+                    df = apply_operations(st.session_state["raw_df"], st.session_state["operations"])
+                else:
+                    # Apply operation incrementally
+                    df[date_column] = pd.to_datetime(df[date_column], errors="coerce", dayfirst=dayfirst_option)
+                    df["Year"] = df[date_column].dt.year
+                    df["Month"] = df[date_column].dt.month
+                    df["Day"] = df[date_column].dt.day
+                    df["DayOfWeek"] = df[date_column].dt.dayofweek
+                    df["Hour"] = df[date_column].dt.hour
+                    df[date_column] = df[date_column].astype(str)
+                st.session_state["filtered_df"] = df
+                st.session_state["current_numeric_cols"] = df.select_dtypes(include="number").columns.tolist()
+                st.session_state["current_categorical_cols"] = df.select_dtypes(include=["object", "category"]).columns.tolist()
                 st.success("✅ Date features extracted successfully!")
-            except Exception as e:
-                st.warning(f"⚠️ Could not parse the selected column as datetime: {e}")
+            else:
+                st.warning("Please select a date column to extract features.")
+
+        # --- Display Operation History (Only if Tracking is Enabled) ---
+        if st.session_state["enable_operation_tracking"] and st.session_state["operations"]:
+            st.subheader("📜 Operation History")
+            for i, op in enumerate(st.session_state["operations"], 1):
+                if op["type"] == "select_columns":
+                    st.write(f"{i}. Selected columns: {', '.join(op['columns'])}")
+                elif op["type"] == "cast_types":
+                    st.write(f"{i}. Cast types - Numeric: {', '.join(op['numeric_cols'])}, Categorical: {', '.join(op['categorical_cols'])}")
+                elif op["type"] == "subsample":
+                    st.write(f"{i}. Subsampled to {op['sample_pct']}% of data")
+                elif op["type"] == "melt":
+                    st.write(f"{i}. Melted with ID vars: {', '.join(op['id_vars'])}")
+                elif op["type"] == "date_features":
+                    st.write(f"{i}. Extracted date features from {op['date_column']} (dayfirst: {op['dayfirst']})")
+                elif op["type"] == "remove_nan":
+                    st.write(f"{i}. Removed rows with missing values")
+                elif op["type"] == "impute":
+                    st.write(f"{i}. Imputed missing values with KNN (numeric) and Mode (categorical)")
 
         # --- Final Data Preview ---
         st.subheader("📊 Preview of the Processed Dataset")
-        st.dataframe(st.session_state["working_df"].head())
-
-        # --- Save to Session State ---
-        st.session_state["filtered_df"] = st.session_state["working_df"]
-        st.session_state["numeric_cols"] = st.session_state["filtered_df"].select_dtypes(include="number").columns.tolist()
-        st.session_state["categorical_cols"] = st.session_state["filtered_df"].select_dtypes(include=["object", "category"]).columns.tolist()
-
-        # Reset imputation flags
-        for flag in ["is_imputed", "imputed_df"]:
-            if flag in st.session_state:
-                del st.session_state[flag]
+        if "filtered_df" in st.session_state:
+            st.dataframe(st.session_state["filtered_df"].head())
+        else:
+            st.info("No processed data available. Please apply some operations.")
 
         # --- Download Section ---
         st.subheader("💾 Download Processed Data")
-        csv = st.session_state["filtered_df"].to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download Processed Data as CSV",
-            data=csv,
-            file_name="processed_dataset.csv",
-            mime="text/csv"
-        )
+        if "filtered_df" in st.session_state:
+            csv = st.session_state["filtered_df"].to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="Download Processed Data as CSV",
+                data=csv,
+                file_name="processed_dataset.csv",
+                mime="text/csv"
+            )
 
 # --- MISSING DATA IMPUTATION SECTION ---
 def missing_data_imputation():
@@ -168,20 +423,10 @@ def missing_data_imputation():
         st.warning("Please upload and process a dataset in the Home section first.")
         return
 
-    # Retrieve filtered data
-    if "working_df" not in st.session_state:
-        st.session_state["working_df"] = st.session_state["filtered_df"].copy()
-
-    df = st.session_state["working_df"]
+    df = st.session_state["filtered_df"].copy()
 
     # Standardize None values to np.nan
-    df = df.applymap(lambda x: np.nan if x is None else x)
-
-    # Update working copy after standardization
-    st.session_state["working_df"] = df
-
-    numeric_cols = df.select_dtypes(include=["float64", "int64"]).columns.tolist()
-    categorical_cols = df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
+    df = df.apply(lambda x: x.replace([None], np.nan))
 
     # Calculate missing data statistics
     st.subheader("📉 Missing Data Overview")
@@ -202,14 +447,19 @@ def missing_data_imputation():
 
     # Remove rows with NaN (button)
     st.subheader("🧹 Data Cleaning Options")
-    remove_nan_button = st.button("Remove Rows with Any Missing Values")
-
-    if remove_nan_button:
+    if st.button("Remove Rows with Any Missing Values"):
         original_rows = df.shape[0]
-        df = df.dropna()
-        st.session_state["working_df"] = df  # Update working data
+        if st.session_state["enable_operation_tracking"]:
+            # Add operation to the list and reapply all
+            st.session_state["operations"].append({"type": "remove_nan"})
+            df = apply_operations(st.session_state["raw_df"], st.session_state["operations"])
+        else:
+            # Apply operation incrementally
+            df = df.dropna()
+        st.session_state["filtered_df"] = df
+        st.session_state["current_numeric_cols"] = st.session_state["filtered_df"].select_dtypes(include="number").columns.tolist()
+        st.session_state["current_categorical_cols"] = st.session_state["filtered_df"].select_dtypes(include=["object", "category"]).columns.tolist()
         st.success(f"Removed rows with missing values! {original_rows - df.shape[0]} rows dropped. New size: {df.shape[0]} rows.")
-
         # Recalculate missing info after removal
         missing_data = df.isna().sum()
         missing_percentage = (missing_data / len(df) * 100).round(2)
@@ -219,7 +469,6 @@ def missing_data_imputation():
             "Percentage Missing (%)": missing_percentage
         })
         st.dataframe(missing_info)
-
         if missing_data.sum() == 0:
             st.info("No missing values left after removal.")
             st.session_state["is_imputed"] = False
@@ -227,45 +476,41 @@ def missing_data_imputation():
 
     # KNN Imputation options
     st.subheader("🔧 Imputation Settings")
-    impute_button = st.button("Impute Missing Values with KNN Imputer (Numeric) and Mode (Categorical)")
-
-    if impute_button:
-        # Separate numeric and categorical data again
-        numeric_cols = df.select_dtypes(include=["float64", "int64"]).columns.tolist()
-        categorical_cols = df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
-
-        numeric_df = df[numeric_cols].copy()
-        categorical_df = df[categorical_cols].copy()
-
-        # 1. Numeric Columns: KNN Imputation
-        if numeric_cols:
-            imputer = KNNImputer(n_neighbors=5, weights="uniform", metric="nan_euclidean")
-            imputed_numeric = imputer.fit_transform(numeric_df)
-            imputed_numeric_df = pd.DataFrame(imputed_numeric, columns=numeric_cols, index=numeric_df.index)
+    if st.button("Impute Missing Values with KNN Imputer (Numeric) and Mode (Categorical)"):
+        if st.session_state["enable_operation_tracking"]:
+            # Add operation to the list and reapply all
+            st.session_state["operations"].append({"type": "impute"})
+            df = apply_operations(st.session_state["raw_df"], st.session_state["operations"])
         else:
-            imputed_numeric_df = pd.DataFrame(index=df.index)
-
-        # 2. Categorical Columns: Mode Imputation
-        if categorical_cols:
-            for col in categorical_cols:
-                most_frequent = categorical_df[col].mode()
-                if not most_frequent.empty:
-                    categorical_df[col].fillna(most_frequent[0], inplace=True)
-        imputed_categorical_df = categorical_df
-
-        # Combine imputed numeric data with categorical data
-        imputed_df = pd.concat([imputed_numeric_df, imputed_categorical_df], axis=1)
-
-        # Ensure column order matches original dataframe
-        imputed_df = imputed_df[df.columns]
-
-        # Store the imputed dataframe in session state
-        st.session_state["imputed_df"] = imputed_df
-        st.session_state["is_imputed"] = True
-
+            # Apply operation incrementally
+            numeric_cols = df.select_dtypes(include=["float64", "int64"]).columns.tolist()
+            categorical_cols = df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
+            numeric_df = df[numeric_cols].copy()
+            categorical_df = df[categorical_cols].copy()
+            # Numeric: KNN Imputation
+            if numeric_cols:
+                imputer = KNNImputer(n_neighbors=5, weights="uniform", metric="nan_euclidean")
+                imputed_numeric = imputer.fit_transform(numeric_df)
+                imputed_numeric_df = pd.DataFrame(imputed_numeric, columns=numeric_cols, index=numeric_df.index)
+            else:
+                imputed_numeric_df = pd.DataFrame(index=df.index)
+            # Categorical: Mode Imputation
+            if categorical_cols:
+                for col in categorical_cols:
+                    most_frequent = categorical_df[col].mode()
+                    if not most_frequent.empty:
+                        categorical_df[col].fillna(most_frequent[0], inplace=True)
+            imputed_categorical_df = categorical_df
+            # Combine and maintain column order
+            df = pd.concat([imputed_numeric_df, imputed_categorical_df], axis=1)
+            df = df[df.columns]
+        st.session_state["filtered_df"] = df
+        st.session_state["current_numeric_cols"] = st.session_state["filtered_df"].select_dtypes(include="number").columns.tolist()
+        st.session_state["current_categorical_cols"] = st.session_state["filtered_df"].select_dtypes(include=["object", "category"]).columns.tolist()
         st.success("Missing values have been imputed!")
         st.write("📊 Preview of the imputed dataset:")
-        st.dataframe(imputed_df.head())
+        st.dataframe(df.head())
+        st.session_state["is_imputed"] = True
 
     # Display current imputation status
     if "is_imputed" in st.session_state and st.session_state["is_imputed"]:
@@ -282,20 +527,21 @@ def visualization():
         st.warning("Please upload and process a dataset in the Home section first.")
         return
 
-    # Decide which dataset to use based on imputation status
-    if "is_imputed" in st.session_state and st.session_state["is_imputed"]:
-        data = st.session_state["imputed_df"]
-        st.success("Using imputed dataset for visualization.")
-    elif "working_df" in st.session_state:
-        data = st.session_state["working_df"]
-        st.info("Using original dataset for visualization.")
-    else:
-        data = st.session_state["filtered_df"]
-        st.info("Using original uploaded dataset for visualization (filtered).")
+    # Use filtered_df as the dataset for visualization
+    data = st.session_state["filtered_df"]
+    # Check if imputation has been applied based on operation history
+    if "operations" in st.session_state and any(op["type"] == "impute" for op in st.session_state["operations"]):
+        st.success("Using dataset with imputed values for visualization.")
+    #else:
+        #st.info("Using original dataset for visualization.")
 
+    # Check if current_numeric_cols and current_categorical_cols exist
+    if "current_numeric_cols" not in st.session_state or "current_categorical_cols" not in st.session_state:
+        st.warning("Column type information is missing. Please assign variable types in the Home section.")
+        return
 
-    numeric_cols = st.session_state["numeric_cols"]
-    categorical_cols = st.session_state["categorical_cols"]
+    numeric_cols = st.session_state["current_numeric_cols"]
+    categorical_cols = st.session_state["current_categorical_cols"]
 
     # Convert categorical columns to strings
     for col in data.select_dtypes(include='category').columns:
@@ -303,18 +549,16 @@ def visualization():
 
     # Define plot types
     PLOT_TYPES = [
-        'bars', 'boxes', 'ridges', 'histogram', 'density 1', 'density 2', 
-        'scatter', 'catplot', 'missingno', 'correlation', 'clustermap', 
-        'pairplot', 'regression', "heatmap"
+        'bars', 'boxes', 'histogram', 'density 1', 'density 2',
+        'scatter', 'catplot', 'missingno', 'correlation', 'clustermap',
+        'pairplot', 'regression', "heatmap", 'ridges'
     ]
 
     if not numeric_cols:
-        # Define plot types
         PLOT_TYPES = [
-            'bars', 'boxes', 'histogram', 'density 2', 
+            'bars', 'boxes', 'histogram', 'density 2',
             'scatter', 'catplot', 'missingno'
         ]
-
 
     # Streamlit UI elements for plot selection (in sidebar)
     st.sidebar.header("Plot Selection")
@@ -323,6 +567,8 @@ def visualization():
 
     # Define color palette (Plotly equivalent of Set2)
     PALETTE = px.colors.qualitative.Set2
+
+    # ... (rest of the visualization section code remains unchanged)
 
     # Plot rendering function
     def render_plot():
@@ -1419,8 +1665,9 @@ def visualization():
                 import pandas as pd
                 import plotly.express as px
 
-                x_cols = data.columns if risk_it_all else categorical_cols
-                y_cols = data.columns if risk_it_all else numeric_cols
+                # Swap column types: X should be numeric, Y should be categorical
+                x_cols = data.columns if risk_it_all else numeric_cols
+                y_cols = data.columns if risk_it_all else categorical_cols
                 cat_cols = data.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
 
                 only_numeric = len(cat_cols) == 0
@@ -1430,38 +1677,37 @@ def visualization():
                 plot_data = data.copy()
 
                 if not only_numeric:
-
                     var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
 
-                    x_values_unique = plot_data[var_x].dropna().unique()
+                    var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
+                    y_values_unique = plot_data[var_y].dropna().unique()
 
-                    n_rows = len(x_values_unique)
+                    n_rows = len(y_values_unique)
 
                     # ⛔ If too many categories -> fallback
                     if n_rows > 100:
-                        st.warning(f"Too many categories in {var_x} ({n_rows} unique values). Plotting numeric columns instead.")
+                        st.warning(f"Too many categories in {var_y} ({n_rows} unique values). Plotting numeric columns instead.")
                         only_numeric = True
                     else:
-                        var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
                         hue_cols = data.columns if risk_it_all else categorical_cols
                         hue = st.sidebar.selectbox("Hue (Color)", hue_cols, index=0)
                         no_hue = st.sidebar.checkbox("No Hue?", value=False)
 
-                        hue_param = var_x if no_hue else hue
+                        hue_param = var_y if no_hue else hue
 
                         # --- Sorting options ---
-                        # Custom order for panels (X var)
-                        x_values_unique = plot_data[var_x].dropna().unique()
-                        custom_order_x = st.sidebar.multiselect(
-                            f"Custom Order for x {var_x}",
-                            options=sorted(x_values_unique.tolist()),
-                            default=sorted(x_values_unique.tolist())
+                        # Custom order for panels (Y var, now categorical)
+                        y_values_unique = plot_data[var_y].dropna().unique()
+                        custom_order_y = st.sidebar.multiselect(
+                            f"Custom Order for y {var_y}",
+                            options=sorted(y_values_unique.tolist()),
+                            default=sorted(y_values_unique.tolist())
                         )
-                        plot_data[var_x] = pd.Categorical(plot_data[var_x], categories=custom_order_x, ordered=True)
-                        x_values_unique = custom_order_x
+                        plot_data[var_y] = pd.Categorical(plot_data[var_y], categories=custom_order_y, ordered=True)
+                        y_values_unique = custom_order_y
 
                         # Custom order for hues
-                        if hue_param != var_x and hue_param in plot_data.columns:
+                        if hue_param != var_y and hue_param in plot_data.columns:
                             hue_values_unique = plot_data[hue_param].dropna().unique()
                             custom_order_hue = st.sidebar.multiselect(
                                 f"Custom Order for hue {hue_param}",
@@ -1496,12 +1742,12 @@ def visualization():
                     )
 
                     for idx, col in enumerate(selected_columns):
-                        y_data = plot_data[col].dropna()
-                        if len(y_data) < 2:
+                        x_data = plot_data[col].dropna()
+                        if len(x_data) < 2:
                             continue
 
-                        kde = gaussian_kde(y_data)
-                        x_values = np.linspace(y_data.min(), y_data.max(), 200)
+                        kde = gaussian_kde(x_data)
+                        x_values = np.linspace(x_data.min(), x_data.max(), 200)
                         density = kde(x_values)
 
                         fig.add_trace(
@@ -1530,37 +1776,37 @@ def visualization():
                     fig.update_xaxes(title="Value", row=n_rows, col=1)
 
                 else:
-                    # ➔ Normal faceted ridges by var_x (few categories, sorted manually)
+                    # ➔ Normal faceted ridges by var_y (categorical, few categories, sorted manually)
                     fig = make_subplots(
                         rows=n_rows,
                         cols=1,
                         shared_xaxes=True,
                         vertical_spacing=0.04,
-                        row_titles=[str(x) for x in x_values_unique]
+                        row_titles=[str(y) for y in y_values_unique]
                     )
 
-                    x_range = [plot_data[var_y].dropna().min(), plot_data[var_y].dropna().max()]
+                    x_range = [plot_data[var_x].dropna().min(), plot_data[var_x].dropna().max()]
                     x_values = np.linspace(x_range[0], x_range[1], 200)
 
-                    for idx, x_val in enumerate(x_values_unique):
+                    for idx, y_val in enumerate(y_values_unique):
                         row_idx = idx + 1
-                        subset = plot_data[plot_data[var_x] == x_val]
+                        subset = plot_data[plot_data[var_y] == y_val]
 
                         if subset.empty:
                             continue
 
-                        if hue_param != var_x and hue_param in subset.columns:
+                        if hue_param != var_y and hue_param in subset.columns:
                             hue_values = subset[hue_param].dropna().unique()
                         else:
                             hue_values = [None]
 
                         for j, hue_val in enumerate(hue_values):
                             hue_subset = subset[subset[hue_param] == hue_val] if hue_val is not None else subset
-                            y_data = hue_subset[var_y].dropna()
-                            if len(y_data) < 2:
+                            x_data = hue_subset[var_x].dropna()
+                            if len(x_data) < 2:
                                 continue
 
-                            kde = gaussian_kde(y_data)
+                            kde = gaussian_kde(x_data)
                             density = kde(x_values)
 
                             if hue_val in global_hue_categories:
@@ -1574,7 +1820,7 @@ def visualization():
                                     y=density / density.max(),
                                     mode='lines',
                                     fill='tozeroy',
-                                    name=f"{hue_val}" if hue_val is not None else str(x_val),
+                                    name=f"{hue_val}" if hue_val is not None else str(y_val),
                                     line=dict(color=PALETTE[color_idx % len(PALETTE)]),
                                     showlegend=(row_idx == 1)
                                 ),
@@ -1585,13 +1831,13 @@ def visualization():
                         fig.update_yaxes(title="Density", row=row_idx, col=1)
 
                     fig.update_layout(
-                        title=f"Ridge Plot Faceted by {var_x}",
+                        title=f"Ridge Plot Faceted by {var_y}",
                         width=900,
                         height=max(300, n_rows * height),
                         showlegend=True
                     )
 
-                    fig.update_xaxes(title=var_y, row=n_rows, col=1)
+                    fig.update_xaxes(title=var_x, row=n_rows, col=1)
 
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -1733,20 +1979,20 @@ def visualization():
                 plot_data = data.copy()
 
                 # --- Sidebar Inputs ---
-                var_x = st.sidebar.selectbox("X Variable", x_cols, index=0, key="density_var_x")
+                var_x = st.sidebar.selectbox("X Variable", x_cols, index=0) #, key="density_var_x")
 
                 if plot_type == "density 2":
                     y_cols = data.columns if risk_it_all else numeric_cols
-                    var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0, key="density_var_y")
+                    var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0) #, key="density_var_y")
                 else:
                     var_y = None
 
                 hue_cols = ['None'] + (data.columns.tolist() if risk_it_all else cat_cols)
-                hue_var = st.sidebar.selectbox("Hue (Color)", hue_cols, index=0, key="density_hue_var")
+                hue_var = st.sidebar.selectbox("Hue (Color)", hue_cols, index=0) #, key="density_hue_var")
 
                 facet_cols = ['None'] + (data.columns.tolist() if risk_it_all else cat_cols)
-                facet_col = st.sidebar.selectbox("Facet Column (optional)", facet_cols, index=0, key="density_facet_col")
-                facet_row = st.sidebar.selectbox("Facet Row (optional)", facet_cols, index=0, key="density_facet_row")
+                facet_col = st.sidebar.selectbox("Facet Column (optional)", facet_cols, index=0) #, key="density_facet_col")
+                facet_row = st.sidebar.selectbox("Facet Row (optional)", facet_cols, index=0) #, key="density_facet_row")
 
                 if plot_type == "density 1":
                     multiple = st.sidebar.selectbox("Multiple", ["layer", "stack"], key="density1_multiple")
@@ -2103,25 +2349,25 @@ def visualization():
                     "Y Variable",
                     y_cols,
                     index=0,
-                    help="Choose a categorical variable for the y-axis."
+                    #help="Choose a categorical variable for the y-axis."
                 )
                 hue = st.sidebar.selectbox(
                     "Hue (Color)",
                     hue_cols,
                     index=0,
-                    help="Choose a categorical variable for color grouping (optional)."
+                    #help="Choose a categorical variable for color grouping (optional)."
                 )
                 col = st.sidebar.selectbox(
                     "Facet Column (optional)",
                     col_cols,
                     index=0,
-                    help="Choose a categorical variable to facet the plot into columns (optional; selecting a variable enables faceting)."
+                    #help="Choose a categorical variable to facet the plot into columns (optional; selecting a variable enables faceting)."
                 )
                 row = st.sidebar.selectbox(
                     "Facet Row (optional)",
                     row_cols,
                     index=0,
-                    help="Choose a categorical variable to facet the plot into rows (optional; selecting a variable enables faceting)."
+                    #help="Choose a categorical variable to facet the plot into rows (optional; selecting a variable enables faceting)."
                 )
                 size_var = st.sidebar.selectbox(
                     "Size Variable",
