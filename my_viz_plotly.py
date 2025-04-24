@@ -83,7 +83,6 @@ def apply_operations(raw_df, operations):
     return df
 
 # --- HOME SECTION ---
-# --- HOME SECTION ---
 def home():
     st.subheader("🏠 Home: Data Upload & Selection")
 
@@ -115,6 +114,8 @@ def home():
         st.session_state["current_numeric_cols"] = []
     if "current_categorical_cols" not in st.session_state:
         st.session_state["current_categorical_cols"] = []
+    if "data_loaded" not in st.session_state:
+        st.session_state["data_loaded"] = False
 
     # Operation tracking toggle
     st.subheader("⚙️ Operation Tracking Settings")
@@ -137,6 +138,7 @@ def home():
         st.session_state.pop("is_imputed", None)
         st.session_state.pop("imputed_df", None)
         st.session_state.pop("enable_operation_tracking", None)
+        st.session_state["data_loaded"] = False
         st.success("Session reset successfully. Please upload a new file.")
         return
 
@@ -153,10 +155,10 @@ def home():
                 st.session_state.pop("filtered_df", None)
                 st.session_state.pop("current_numeric_cols", None)
                 st.session_state.pop("current_categorical_cols", None)
+                st.session_state["data_loaded"] = False
                 st.info("No operations left to apply.")
 
     # Load data from GitHub link if provided
-    data_loaded = False
     if load_from_github and github_link:
         try:
             # Validate that the URL points to a CSV file
@@ -186,8 +188,8 @@ def home():
                 st.session_state["filtered_df"] = raw_df.copy()
                 st.session_state["current_numeric_cols"] = raw_df.select_dtypes(include="number").columns.tolist()
                 st.session_state["current_categorical_cols"] = raw_df.select_dtypes(include=["object", "category"]).columns.tolist()
+                st.session_state["data_loaded"] = True
                 st.success(f"CSV file successfully loaded from GitHub link: {github_link}")
-                data_loaded = True
         except requests.exceptions.RequestException as e:
             st.error(f"Failed to load CSV from GitHub link: {e}")
         except pd.errors.EmptyDataError:
@@ -221,11 +223,18 @@ def home():
             st.session_state["current_numeric_cols"] = raw_df.select_dtypes(include="number").columns.tolist()
             st.session_state["current_categorical_cols"] = raw_df.select_dtypes(include=["object", "category"]).columns.tolist()
 
-        data_loaded = True
+        st.session_state["data_loaded"] = True
 
     # Proceed to operations only if data has been loaded (from either source)
-    if data_loaded and "filtered_df" in st.session_state:
+    if st.session_state["data_loaded"] and "filtered_df" in st.session_state:
         df = st.session_state["filtered_df"].copy()
+
+        # Reapply all operations if tracking is enabled
+        if st.session_state["enable_operation_tracking"] and "raw_df" in st.session_state and st.session_state["operations"]:
+            df = apply_operations(st.session_state["raw_df"], st.session_state["operations"])
+            st.session_state["filtered_df"] = df
+            st.session_state["current_numeric_cols"] = df.select_dtypes(include="number").columns.tolist()
+            st.session_state["current_categorical_cols"] = df.select_dtypes(include=["object", "category"]).columns.tolist()
 
         # --- Column Selection ---
         st.subheader("🎯 Column Selection")
