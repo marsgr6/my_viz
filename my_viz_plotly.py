@@ -17,7 +17,7 @@ import io
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
 
-st.set_page_config(layout="wide")
+st.set_page_config(layout="wide", page_title="EDAViz App", page_icon="🚀")
 
 # --- Helper Function to Apply Operations (Used When Tracking is Enabled) ---
 def apply_operations(raw_df, operations):
