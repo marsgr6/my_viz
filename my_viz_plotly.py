@@ -558,7 +558,7 @@ def visualization():
 
     # Define plot types
     PLOT_TYPES = [
-        'bars', 'boxes', 'histogram', 'density 1', 'density 2',
+        'bars', 'boxes', 'lineplot', 'histogram', 'density 1', 'density 2',
         'scatter', 'catplot', 'missingno', 'correlation', 'clustermap',
         'pairplot', 'regression', "heatmap", 'ridges'
     ]
@@ -1345,7 +1345,7 @@ def visualization():
                 hue = st.sidebar.selectbox("Hue (Color)", hue_cols, index=0)
                 facet_col = st.sidebar.selectbox("Facet Column (optional)", facet_cols, index=0)
                 facet_row = st.sidebar.selectbox("Facet Row (optional)", facet_cols, index=0)
-                tplot = st.sidebar.selectbox("Plot Type", ["boxplot", "lineplot", "violin"])
+                tplot = st.sidebar.selectbox("Plot Type", ["boxplot", "violin"])
 
                 # Fix None values
                 hue_used = None if hue == 'None' else hue
@@ -1432,6 +1432,8 @@ def visualization():
                     if tplot == "boxplot":
                         fig = px.box(**plot_kwargs)
                     elif tplot == "violin":
+                        #stop_at_min_max = st.sidebar.checkbox("Stop Violin Density at Min/Max", value=False) if tplot == "violin" else False
+                        #plot_kwargs['cut'] = 0 if stop_at_min_max else None
                         fig = px.violin(**plot_kwargs, box=True)
 
                     # Swarm Points (only when hue_used is None or hue_used == var_x, and no faceting)
@@ -1461,209 +1463,319 @@ def visualization():
                     plot_placeholder = st.empty()
                     plot_placeholder.plotly_chart(fig, use_container_width=True, key=f"{tplot}_{var_x}_{var_y}_{hue_used}")
 
-                elif tplot == "lineplot":
-                    import plotly.graph_objects as go
-                    from plotly.subplots import make_subplots
-                    import re
-                    from scipy.stats import t
+            # --- Lineplot ---
+            elif plot_type == 'lineplot':
+                import numpy as np
+                import plotly.express as px
+                import plotly.graph_objects as go
+                import pandas as pd
+                from plotly.subplots import make_subplots
+                import re
+                from scipy.stats import t
 
-                    # Debug: Track rendering
-                    # st.write(f"Rendering lineplot with key: lineplot_{var_x}_{var_y}_{hue_used}")
+                x_cols = data.columns if risk_it_all else categorical_cols
+                y_cols = data.columns if risk_it_all else numeric_cols
+                hue_cols = ['None'] + (data.columns.tolist() if risk_it_all else categorical_cols)
+                facet_cols = ['None'] + (categorical_cols if not risk_it_all else data.columns.tolist())
+                style_cols = ['None'] + (data.columns.tolist() if risk_it_all else categorical_cols)
+                width_cols = ['None'] + (data.columns.tolist() if risk_it_all else numeric_cols)
 
-                    # Debug: Inspect plot_data for NaNs, outliers
-                    # st.write(f"Summary of {var_y}:", plot_data[var_y].describe())
-                    # st.write(f"NaNs in {var_y}:", plot_data[var_y].isna().sum())
+                var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
+                var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
+                hue = st.sidebar.selectbox("Hue (Color)", hue_cols, index=0)
+                facet_col = st.sidebar.selectbox("Facet Column (optional)", facet_cols, index=0)
+                facet_row = st.sidebar.selectbox("Facet Row (optional)", facet_cols, index=0)
+                style = st.sidebar.selectbox("Line Style (Categorical)", style_cols, index=0)
+                width = st.sidebar.selectbox("Line Width (Numeric)", width_cols, index=0)
+                show_markers = st.sidebar.checkbox("Show Markers", value=True)
+                band_interval = st.sidebar.checkbox("Show Band in Lineplot (CI)", value=False)
+                time_series = st.sidebar.checkbox("Time is here", value=False)
+                ci_level = st.sidebar.selectbox("Confidence Interval Level", ["68%", "95%", "99%"], index=1) if (band_interval and not time_series) else "95%"
+                ci_level_value = {"68%": 0.68, "95%": 0.95, "99%": 0.99}[ci_level]
 
-                    # Determine facet values
-                    facet_col_vals = plot_data[facet_col_used].dropna().unique() if facet_col_used else [None]
-                    facet_row_vals = plot_data[facet_row_used].dropna().unique() if facet_row_used else [None]
+                # Fix None values
+                hue_used = None if hue == 'None' else hue
+                facet_col_used = None if facet_col == 'None' else facet_col
+                facet_row_used = None if facet_row == 'None' else facet_row
+                style_used = None if style == 'None' else style
+                width_used = None if width == 'None' else width
 
-                    n_cols = max(len(facet_col_vals), 1)
-                    n_rows = max(len(facet_row_vals), 1)
+                plot_data = data.copy()
 
-                    # Create subplot figure
-                    fig = make_subplots(
-                        rows=n_rows,
-                        cols=n_cols,
-                        shared_yaxes=True,
-                        shared_xaxes=True,
-                        horizontal_spacing=0.1,
-                        vertical_spacing=0.12,
-                        subplot_titles=[
-                            f"{facet_row_used}: {r} | {facet_col_used}: {c}"
-                            if facet_row_used and facet_col_used else
-                            f"{facet_col_used}: {c}" if facet_col_used else
-                            f"{facet_row_used}: {r}" if facet_row_used else ""
-                            for r in facet_row_vals for c in facet_col_vals
-                        ]
+                # Force Hue column to string if selected
+                if hue_used is not None and hue_used in plot_data.columns:
+                    plot_data[hue_used] = plot_data[hue_used].astype(str)
+
+                # Let the user specify custom orders
+                category_orders = {}
+
+                if var_x in plot_data.columns and plot_data[var_x].dtype.name in ['object', 'category']:
+                    custom_order_x = st.sidebar.multiselect(
+                        f"Custom Order for x {var_x}",
+                        options=plot_data[var_x].dropna().unique().tolist(),
+                        default=sorted(plot_data[var_x].dropna().unique().tolist())
                     )
+                    plot_data[var_x] = pd.Categorical(plot_data[var_x], categories=custom_order_x, ordered=True)
+                    category_orders[var_x] = custom_order_x
 
-                    # Color mapping for hue (use hue if different from var_x, otherwise single color)
-                    if hue_used and hue_used != var_x:
-                        hue_values = plot_data[hue_used].dropna().unique()
-                    else:
-                        hue_values = [None]  # Treat as no hue for coloring
+                if hue_used and hue_used in plot_data.columns and plot_data[hue_used].dtype.name in ['object', 'category']:
+                    custom_order_hue = st.sidebar.multiselect(
+                        f"Custom Order for hue {hue_used}",
+                        options=plot_data[hue_used].dropna().unique().tolist(),
+                        default=sorted(plot_data[hue_used].dropna().unique().tolist())
+                    )
+                    plot_data[hue_used] = pd.Categorical(plot_data[hue_used], categories=custom_order_hue, ordered=True)
+                    category_orders[hue_used] = custom_order_hue
 
-                    color_map = {}
-                    for idx, hv in enumerate(hue_values):
-                        color_map[hv] = PALETTE[idx % len(PALETTE)]
+                if facet_col_used and facet_col_used in plot_data.columns and plot_data[facet_col_used].dtype.name in ['object', 'category']:
+                    custom_order_facet_col = st.sidebar.multiselect(
+                        f"Custom Order for col {facet_col_used}",
+                        options=plot_data[facet_col_used].dropna().unique().tolist(),
+                        default=sorted(plot_data[facet_col_used].dropna().unique().tolist())
+                    )
+                    plot_data[facet_col_used] = pd.Categorical(plot_data[facet_col_used], categories=custom_order_facet_col, ordered=True)
+                    category_orders[facet_col_used] = custom_order_facet_col
 
-                    # Helper function to convert line color to semi-transparent fillcolor
-                    def to_fillcolor(line_color, alpha=0.2):
-                        try:
-                            # Handle hex colors
-                            if line_color.startswith('#'):
-                                from matplotlib.colors import to_rgb
-                                rgb = to_rgb(line_color)
-                                return f'rgba({int(rgb[0]*255)},{int(rgb[1]*255)},{int(rgb[2]*255)},{alpha})'
-                            
-                            # Handle rgb strings (e.g., 'rgb(102,194,165)')
-                            rgb_match = re.match(r'rgb\((\d+),\s*(\d+),\s*(\d+)\)', line_color)
-                            if rgb_match:
-                                r, g, b = map(int, rgb_match.groups())
-                                return f'rgba({r},{g},{b},{alpha})'
-                            
-                            # Handle named colors (e.g., 'blue', 'red')
+                if facet_row_used and facet_row_used in plot_data.columns and plot_data[facet_row_used].dtype.name in ['object', 'category']:
+                    custom_order_facet_row = st.sidebar.multiselect(
+                        f"Custom Order for row {facet_row_used}",
+                        options=plot_data[facet_row_used].dropna().unique().tolist(),
+                        default=sorted(plot_data[facet_row_used].dropna().unique().tolist())
+                    )
+                    plot_data[facet_row_used] = pd.Categorical(plot_data[facet_row_used], categories=custom_order_facet_row, ordered=True)
+                    category_orders[facet_row_used] = custom_order_facet_row
+
+                # Determine facet values
+                facet_col_vals = plot_data[facet_col_used].dropna().unique().tolist() if facet_col_used else [None]
+                facet_row_vals = plot_data[facet_row_used].dropna().unique().tolist() if facet_row_used else [None]
+
+                n_cols = len(facet_col_vals) if facet_col_used else 1
+                n_rows = len(facet_row_vals) if facet_row_used else 1
+
+                # Create subplot figure
+                fig = make_subplots(
+                    rows=n_rows,
+                    cols=n_cols,
+                    shared_yaxes=True,
+                    shared_xaxes=True,
+                    horizontal_spacing=0.1,
+                    vertical_spacing=0.12,
+                    subplot_titles=[
+                        f"{facet_row_used}: {r} | {facet_col_used}: {c}"
+                        if facet_row_used and facet_col_used else
+                        f"{facet_col_used}: {c}" if facet_col_used else
+                        f"{facet_row_used}: {r}" if facet_row_used else ""
+                        for r in facet_row_vals for c in facet_col_vals
+                    ]
+                )
+
+                # Color mapping for hue (use hue if different from var_x, otherwise single color)
+                if hue_used and hue_used != var_x:
+                    hue_values = plot_data[hue_used].dropna().unique()
+                else:
+                    hue_values = [None]  # Treat as no hue for coloring
+
+                color_map = {}
+                for idx, hv in enumerate(hue_values):
+                    color_map[hv] = PALETTE[idx % len(PALETTE)]
+
+                # Define line styles based on style column (default to solid if None or not categorical)
+                line_styles = {
+                    'solid': 'solid',
+                    'dash': 'dash',
+                    'dot': 'dot',
+                    'dashdot': 'dashdot'
+                }
+                if style_used and style_used in plot_data.columns and plot_data[style_used].dtype.name in ['object', 'category']:
+                    style_values = plot_data[style_used].dropna().unique()
+                    style_map = {v: list(line_styles.values())[i % len(line_styles)] for i, v in enumerate(style_values)}
+                else:
+                    style_map = {None: 'solid'}
+
+                # Define line widths based on width column (default to 2 if None or not numeric)
+                if width_used and width_used in plot_data.columns and np.issubdtype(plot_data[width_used].dtype, np.number):
+                    width_map = plot_data[width_used].dropna().to_dict()
+                else:
+                    width_map = {None: 2}
+
+                # Helper function to convert line color to semi-transparent fillcolor
+                def to_fillcolor(line_color, alpha=0.2):
+                    try:
+                        # Handle hex colors
+                        if line_color.startswith('#'):
                             from matplotlib.colors import to_rgb
                             rgb = to_rgb(line_color)
                             return f'rgba({int(rgb[0]*255)},{int(rgb[1]*255)},{int(rgb[2]*255)},{alpha})'
-                            
-                        except (ValueError, KeyError):
-                            # Fallback to a default color
-                            return f'rgba(128,128,128,{alpha})'  # Gray fallback
+                        
+                        # Handle rgb strings (e.g., 'rgb(102,194,165)')
+                        rgb_match = re.match(r'rgb\((\d+),\s*(\d+),\s*(\d+)\)', line_color)
+                        if rgb_match:
+                            r, g, b = map(int, rgb_match.groups())
+                            return f'rgba({r},{g},{b},{alpha})'
+                        
+                        # Handle named colors (e.g., 'blue', 'red')
+                        from matplotlib.colors import to_rgb
+                        rgb = to_rgb(line_color)
+                        return f'rgba({int(rgb[0]*255)},{int(rgb[1]*255)},{int(rgb[2]*255)},{alpha})'
+                        
+                    except (ValueError, KeyError):
+                        # Fallback to a default color
+                        return f'rgba(128,128,128,{alpha})'  # Gray fallback
 
-                    # Add traces for each facet and hue
-                    for i_row, row_val in enumerate(facet_row_vals):
-                        for i_col, col_val in enumerate(facet_col_vals):
-                            row_idx = i_row + 1
-                            col_idx = i_col + 1
+                # Track which hue values have been added to the legend to avoid duplicates
+                seen_hue_values = set()
 
-                            # Filter data by facet values
-                            sub_data = plot_data.copy()
-                            if facet_row_used:
-                                sub_data = sub_data[sub_data[facet_row_used] == row_val]
-                            if facet_col_used:
-                                sub_data = sub_data[sub_data[facet_col_used] == col_val]
+                # Add traces for each facet and hue
+                for i_row, row_val in enumerate(facet_row_vals):
+                    for i_col, col_val in enumerate(facet_col_vals):
+                        row_idx = i_row + 1
+                        col_idx = i_col + 1
 
-                            if sub_data.empty:
+                        # Filter data by facet values
+                        sub_data = plot_data.copy()
+                        if facet_row_used:
+                            sub_data = sub_data[sub_data[facet_row_used] == row_val]
+                        if facet_col_used:
+                            sub_data = sub_data[sub_data[facet_col_used] == col_val]
+
+                        if sub_data.empty:
+                            continue
+
+                        for hue_val in hue_values:
+                            # Filter subset by hue
+                            subset = sub_data.copy()
+                            if hue_used and hue_used != var_x:
+                                subset = subset[subset[hue_used] == hue_val]
+
+                            if subset.empty:
                                 continue
 
-                            for hue_val in hue_values:
-                                # Filter subset by hue
-                                subset = sub_data.copy()
-                                if hue_used and hue_used != var_x:
-                                    subset = subset[subset[hue_used] == hue_val]
+                            # Get line color for this hue
+                            line_color = color_map[hue_val]
 
-                                if subset.empty:
+                            # Determine if this hue value should show in the legend
+                            # Show legend only for the first occurrence of this hue value
+                            show_in_legend = hue_val not in seen_hue_values
+                            if show_in_legend:
+                                seen_hue_values.add(hue_val)
+
+                            if time_series:
+                                # Validate var_x is object (e.g., date) and var_y is numerical
+                                is_object = False
+                                if isinstance(plot_data[var_x].dtype, pd.CategoricalDtype):
+                                    # For categorical columns, check the dtype of the categories
+                                    if plot_data[var_x].cat.categories.dtype.name == 'object':
+                                        is_object = True
+                                else:
+                                    # For non-categorical columns, check the dtype directly
+                                    if plot_data[var_x].dtype.name == 'object':
+                                        is_object = True
+
+                                if not is_object:
+                                    st.warning(f"Time series mode requires '{var_x}' to be an object column (e.g., dates).")
+                                    continue
+                                if not np.issubdtype(plot_data[var_y].dtype, np.number):
+                                    st.warning(f"Time series mode requires '{var_y}' to be a numerical column.")
                                     continue
 
-                                # Get line color for this hue
-                                line_color = color_map[hue_val]
+                                # Plot raw time series data without sorting
+                                scatter_kwargs = dict(
+                                    x=subset[var_x],
+                                    y=subset[var_y],
+                                    mode='lines' + ('+markers' if show_markers else ''),
+                                    name=str(hue_val) if hue_val else "Line",
+                                    legendgroup=str(hue_val) if hue_val else None,
+                                    marker=dict(size=6, color=line_color),
+                                    line=dict(
+                                        color=line_color,
+                                        dash=style_map.get(subset[style_used].iloc[0] if style_used else None, 'solid'),
+                                        width=width_map.get(subset[width_used].iloc[0] if width_used else None, 2)
+                                    ),
+                                    showlegend=show_in_legend
+                                )
+                            else:
+                                # Prepare grouping columns (only include non-None columns, avoid hue if same as var_x)
+                                group_cols = [var_x]
+                                if hue_used and hue_used != var_x:
+                                    group_cols.append(hue_used)
+                                if facet_col_used:
+                                    group_cols.append(facet_col_used)
+                                if facet_row_used:
+                                    group_cols.append(facet_row_used)
 
-                                if time_series:
-                                    # Validate var_x is object (e.g., date) and var_y is numerical
-                                    is_object = False
-                                    if isinstance(plot_data[var_x].dtype, pd.CategoricalDtype):
-                                        # For categorical columns, check the dtype of the categories
-                                        if plot_data[var_x].cat.categories.dtype.name == 'object':
-                                            is_object = True
-                                    else:
-                                        # For non-categorical columns, check the dtype directly
-                                        if plot_data[var_x].dtype.name == 'object':
-                                            is_object = True
+                                # Group by selected columns and aggregate mean, std, and count
+                                grouped = plot_data.groupby(group_cols)[var_y].agg(['mean', 'std', 'count']).reset_index()
 
-                                    if not is_object:
-                                        st.warning(f"Time series mode requires '{var_x}' to be an object column (e.g., dates).")
-                                        continue
-                                    if not np.issubdtype(plot_data[var_y].dtype, np.number):
-                                        st.warning(f"Time series mode requires '{var_y}' to be a numerical column.")
-                                        continue
+                                # Filter grouped data for this facet and hue
+                                sub = grouped.copy()
+                                if hue_used and hue_used != var_x:
+                                    sub = sub[sub[hue_used] == hue_val]
+                                if facet_row_used:
+                                    sub = sub[sub[facet_row_used] == row_val]
+                                if facet_col_used:
+                                    sub = sub[sub[facet_col_used] == col_val]
 
-                                    # Plot raw time series data without sorting
-                                    scatter_kwargs = dict(
-                                        x=subset[var_x],
-                                        y=subset[var_y],
-                                        mode='lines',
-                                        name=str(hue_val) if hue_val else "Line",
-                                        legendgroup=str(hue_val) if hue_val else None,
-                                        marker=dict(size=6, color=line_color),
-                                        line=dict(color=line_color),
-                                        showlegend=(row_idx == 1 and col_idx == 1)
+                                if sub.empty or sub['count'].iloc[0] < 2:  # Skip if empty or insufficient sample size
+                                    continue
+
+                                # Calculate confidence intervals using t.interval with selected CI level
+                                alpha = 1 - ci_level_value
+                                sub['se'] = sub['std'] / np.sqrt(sub['count'])  # Standard error
+                                sub['ci_lower'], sub['ci_upper'] = t.interval(
+                                    ci_level_value,
+                                    sub['count'] - 1,
+                                    loc=sub['mean'],
+                                    scale=sub['se']
+                                )
+                                # CI half-width for plotting (symmetric CI)
+                                sub['ci'] = (sub['ci_upper'] - sub['ci_lower']) / 2
+
+                                # Plot line with error bars if band_interval is enabled
+                                scatter_kwargs = dict(
+                                    x=sub[var_x],
+                                    y=sub['mean'],
+                                    mode='lines' + ('+markers' if show_markers else ''),
+                                    name=str(hue_val) if hue_val else "Line",
+                                    legendgroup=str(hue_val) if hue_val else None,
+                                    marker=dict(size=6, color=line_color),
+                                    line=dict(
+                                        color=line_color,
+                                        dash=style_map.get(sub[style_used].iloc[0] if style_used else None, 'solid'),
+                                        width=width_map.get(sub[width_used].iloc[0] if width_used else None, 2)
+                                    ),
+                                    showlegend=show_in_legend
+                                )
+                                if band_interval:
+                                    scatter_kwargs['error_y'] = dict(
+                                        type='data',
+                                        symmetric=True,
+                                        array=sub['ci'],
+                                        thickness=1.5,
+                                        width=5,  # Width of the error bar caps
+                                        color=line_color
                                     )
-                                else:
-                                    # Prepare grouping columns (only include non-None columns, avoid hue if same as var_x)
-                                    group_cols = [var_x]
-                                    if hue_used and hue_used != var_x:
-                                        group_cols.append(hue_used)
-                                    if facet_col_used:
-                                        group_cols.append(facet_col_used)
-                                    if facet_row_used:
-                                        group_cols.append(facet_row_used)
 
-                                    # Group by selected columns and aggregate mean, std, and count
-                                    grouped = plot_data.groupby(group_cols)[var_y].agg(['mean', 'std', 'count']).reset_index()
+                            fig.add_trace(go.Scatter(**scatter_kwargs), row=row_idx, col=col_idx)
 
-                                    # Filter grouped data for this facet and hue
-                                    sub = grouped.copy()
-                                    if hue_used and hue_used != var_x:
-                                        sub = sub[sub[hue_used] == hue_val]
-                                    if facet_row_used:
-                                        sub = sub[sub[facet_row_used] == row_val]
-                                    if facet_col_used:
-                                        sub = sub[sub[facet_col_used] == col_val]
+                # Update layout with selected CI level in title and preserve shared axes
+                fig.update_layout(
+                    width=1000,
+                    height=400 * n_rows,
+                    title=f"{'Time Series ' if time_series else ''}Lineplot: {var_y} vs {var_x}" + (f" with {ci_level} CI" if not time_series else ""),
+                    showlegend=True,
+                    legend_title=hue_used if hue_used else None
+                )
 
-                                    if sub.empty or sub['count'].iloc[0] < 2:  # Skip if empty or insufficient sample size
-                                        continue
+                # Add axis titles to each subplot without breaking shared axes
+                if facet_row_used or facet_col_used:
+                    for i in range(1, n_rows + 1):
+                        for j in range(1, n_cols + 1):
+                            fig.update_xaxes(title_text=var_x, row=i, col=j, showticklabels=True)
+                            fig.update_yaxes(title_text=var_y, row=i, col=j, showticklabels=True)
 
-                                    # Calculate confidence intervals using t.interval with selected CI level
-                                    alpha = 1 - ci_level_value
-                                    sub['se'] = sub['std'] / np.sqrt(sub['count'])  # Standard error
-                                    sub['ci_lower'], sub['ci_upper'] = t.interval(
-                                        ci_level_value,
-                                        sub['count'] - 1,
-                                        loc=sub['mean'],
-                                        scale=sub['se']
-                                    )
-                                    # CI half-width for plotting (symmetric CI)
-                                    sub['ci'] = (sub['ci_upper'] - sub['ci_lower']) / 2
-
-                                    # Plot line with error bars if band_interval is enabled
-                                    scatter_kwargs = dict(
-                                        x=sub[var_x],
-                                        y=sub['mean'],
-                                        mode='lines+markers',
-                                        name=str(hue_val) if hue_val else "Line",
-                                        legendgroup=str(hue_val) if hue_val else None,
-                                        marker=dict(size=6, color=line_color),
-                                        line=dict(color=line_color),
-                                        showlegend=(row_idx == 1 and col_idx == 1)
-                                    )
-                                    if band_interval:
-                                        scatter_kwargs['error_y'] = dict(
-                                            type='data',
-                                            symmetric=True,
-                                            array=sub['ci'],
-                                            thickness=1.5,
-                                            width=5,  # Width of the error bar caps
-                                            color=line_color
-                                        )
-
-                                fig.add_trace(go.Scatter(**scatter_kwargs), row=row_idx, col=col_idx)
-
-                    # Update layout with selected CI level in title
-                    fig.update_layout(
-                        width=1000,
-                        height=400 * n_rows,
-                        title=f"{'Time Series ' if time_series else ''}Lineplot: {var_y} vs {var_x}" + (f" with {ci_level} CI" if not time_series else ""),
-                        xaxis_title=var_x,
-                        yaxis_title=var_y,
-                        legend_title=hue_used if hue_used else None,
-                        showlegend=True
-                    )
-
-                    # Render plot in a single placeholder
-                    plot_placeholder = st.empty()
-                    plot_placeholder.plotly_chart(fig, use_container_width=True, key=f"lineplot_{var_x}_{var_y}_{hue_used}")
+                # Render plot
+                plot_placeholder = st.empty()
+                plot_placeholder.plotly_chart(fig, use_container_width=True, key=f"lineplot_{var_x}_{var_y}_{hue_used}")
 
             # --- Ridges sometime are nice ---
             elif plot_type == 'ridges':
