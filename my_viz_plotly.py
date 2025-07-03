@@ -3248,7 +3248,8 @@ def time_series_analysis():
             "Anomaly Detection",
             "Temporal Profiles",
             "Calendar Heatmap",
-            "Heatmap Profiles"
+            "Heatmap Profiles",
+            "Forecasting"
         ]
     )
 
@@ -3611,6 +3612,110 @@ def time_series_analysis():
             )
 
         # Display the figure in Streamlit
+        st.plotly_chart(fig, use_container_width=True)
+
+    # New Forecasting Section
+    elif analysis_section == "Forecasting":
+        from prophet import Prophet
+
+        st.subheader("📈 Forecasting for " + selected_col)
+        
+        # Prepare data based on time granularity
+        df_prophet = df_selected.reset_index()
+        first_column_name = df_prophet.columns[0]  # Get the name of the first column (e.g., the index name)
+        df_prophet = df_prophet.rename(columns={first_column_name: 'ds', selected_col: 'y'})
+        
+        # Debug: Check the DataFrame structure
+        #st.write("Raw DataFrame for Prophet:", df_prophet.head())
+        
+        # Resample data based on selected granularity
+        if time_granularity == "Hourly":
+            df_prophet = df_prophet.resample('H', on='ds').mean().reset_index()
+        elif time_granularity == "Daily":
+            df_prophet = df_prophet.resample('D', on='ds').mean().reset_index()
+        elif time_granularity == "Weekly":
+            df_prophet = df_prophet.resample('W', on='ds').mean().reset_index()
+        elif time_granularity == "Monthly":
+            df_prophet = df_prophet.resample('M', on='ds').mean().reset_index()
+        elif time_granularity == "Quarterly":
+            df_prophet = df_prophet.resample('Q', on='ds').mean().reset_index()
+        elif time_granularity == "Yearly":
+            df_prophet = df_prophet.resample('Y', on='ds').mean().reset_index()
+        # If "None" or invalid, use the original data as-is
+        
+        # Ensure only 'ds' and 'y' columns are present
+        if df_prophet.columns.tolist() != ['ds', 'y']:
+            df_prophet = df_prophet[['ds', 'y']].copy()  # Keep only required columns
+        
+        # Handle missing values
+        df_prophet['y'] = df_prophet['y'].fillna(method='ffill')  # Forward fill missing values
+        
+        # Validate data
+        if df_prophet.empty or df_prophet['ds'].isna().all() or df_prophet['y'].isna().all():
+            st.error("No valid data available for forecasting. Please check the dataset.")
+            return
+
+        # Initialize and fit the Prophet model
+        try:
+            model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=True)
+            model.fit(df_prophet)
+        except ValueError as e:
+            st.error(f"Error fitting Prophet model: {e}")
+            return
+
+        # Forecast period selection (adjusted based on granularity)
+        if time_granularity == "Hourly":
+            forecast_period = st.slider("Select forecast period (hours)", 24, 8760, 720)  # Up to 1 year in hours
+        elif time_granularity == "Daily":
+            forecast_period = st.slider("Select forecast period (days)", 7, 365, 30)  # Up to 1 year in days
+        elif time_granularity == "Weekly":
+            forecast_period = st.slider("Select forecast period (weeks)", 1, 52, 4)  # Up to 1 year in weeks
+        elif time_granularity == "Monthly":
+            forecast_period = st.slider("Select forecast period (months)", 1, 12, 3)  # Up to 1 year in months
+        elif time_granularity == "Quarterly":
+            forecast_period = st.slider("Select forecast period (quarters)", 1, 4, 1)  # Up to 1 year in quarters
+        elif time_granularity == "Yearly":
+            forecast_period = st.slider("Select forecast period (years)", 1, 5, 1)  # Up to 5 years
+        else:  # Default to daily if "None" or invalid
+            forecast_period = st.slider("Select forecast period (days)", 7, 365, 30)
+
+        # Create future dataframe with the appropriate period
+        future = model.make_future_dataframe(periods=forecast_period, freq={
+            "Hourly": 'H',
+            "Daily": 'D',
+            "Weekly": 'W',
+            "Monthly": 'M',
+            "Quarterly": 'Q',
+            "Yearly": 'Y'
+        }.get(time_granularity, 'D'))  # Default to daily if invalid
+        forecast = model.predict(future)
+
+        # Plot the forecast
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df_prophet['ds'], y=df_prophet['y'], name='Historical Data', mode='lines'))
+        fig.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], name='Forecast', mode='lines'))
+        fig.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_upper'], name='Upper Bound', mode='lines', line=dict(color='rgba(0,0,0,0)')))
+        fig.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_lower'], name='Lower Bound', mode='lines', line=dict(color='rgba(0,0,0,0)')))
+        fig.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_upper'], fill='tonexty', mode='none', fillcolor='rgba(0,100,80,0.2)', name='Confidence Interval'))
+        
+        fig.update_layout(
+            title=f"Forecast for {selected_col}",
+            xaxis_title="Date",
+            yaxis_title=selected_col,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            coloraxis_colorbar=dict(
+                title=selected_col,
+                thickness=20,
+                len=0.8,
+                x=0.95,
+                y=0.5,
+                yanchor="middle",
+                tickformat=".2f",
+                ticks="outside"
+            )
+        )
+
+        # Display in Streamlit
         st.plotly_chart(fig, use_container_width=True)
 
 # --- MAIN ROUTING ---
