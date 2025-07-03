@@ -3231,7 +3231,7 @@ def time_series_analysis():
     from statsmodels.tsa.seasonal import seasonal_decompose
     from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
     import matplotlib.pyplot as plt
-    import calplot
+    from plotly_calplot import calplot
     import pandas as pd
     import numpy as np
     import requests
@@ -3248,7 +3248,7 @@ def time_series_analysis():
             "Anomaly Detection",
             "Temporal Profiles",
             "Calendar Heatmap",
-            "Monthly Calendar"
+            "Heatmap Profiles"
         ]
     )
 
@@ -3412,27 +3412,205 @@ def time_series_analysis():
             fig.update_layout(title=f"Profile by {profile_unit}", xaxis_title=profile_unit, yaxis_title=selected_col)
             st.plotly_chart(fig, use_container_width=True)
 
-    elif analysis_section == "Calendar Heatmap":
-        st.subheader("📆 Calendar Heatmap (Daily)")
-        daily_series = df_selected[selected_col].resample('D').mean()
-        fig, ax = calplot.calplot(daily_series)
-        st.pyplot(fig)
 
-    elif analysis_section == "Monthly Calendar":
-        st.subheader("📅 Monthly Calendar Heatmap")
-        df_month = df_selected.copy()
-        df_month['month'] = df_month.index.month
-        df_month['year'] = df_month.index.year
-        heatmap_data = df_month.groupby(['year', 'month'])[selected_col].mean().unstack()
-        fig = px.imshow(
-            heatmap_data,
-            labels=dict(x="Month", y="Year", color=selected_col),
-            x=["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
-            y=heatmap_data.index,
-            aspect="auto",
-            color_continuous_scale="Viridis"
+
+    elif analysis_section == "Calendar Heatmap":
+        from plotly_calplot import calplot
+
+        st.subheader("📆 Calendar Heatmap (Daily)")
+        # Resample the selected column to daily frequency and compute the mean
+        daily_series = df_selected[selected_col].resample('D').mean()
+        # Handle missing values by filling with 0 (or adjust as needed)
+        daily_series = daily_series.fillna(0)
+        # Convert to DataFrame
+        daily_df = daily_series.reset_index()
+        daily_df.columns = ['date', selected_col]  # Keep the original column name
+
+        # Validate data
+        if daily_df[selected_col].isna().all() or daily_df[selected_col].eq(daily_df[selected_col].iloc[0]).all():
+            st.warning("Data contains only NaN or constant values, which may prevent the color bar from displaying.")
+            return
+
+        # Create the calendar heatmap
+        fig = calplot(
+            daily_df,
+            x="date",
+            y=selected_col,
+            colorscale="Viridis",  # Use Blues colormap
+            showscale=True  # Explicitly enable the color bar
         )
-        fig.update_layout(title="Monthly Heatmap", xaxis_title="Month", yaxis_title="Year")
+        # Customize the color bar and layout
+        fig.update_layout(
+            title=f"Calendar Heatmap: {selected_col}",
+            coloraxis_colorbar=dict(
+                title=selected_col,  # Color bar title
+                titlefont=dict(size=14),
+                thickness=10,  # Thickness of the color bar
+                len=0.8,  # Length of the color bar
+                x=0.95,  # Move closer to the plot to ensure visibility
+                y=0.5,
+                yanchor="middle",
+                tickformat=".2f",  # Format ticks to 2 decimal places
+                ticks="outside"
+            ),
+            height=400  # Adjust height for each year’s plot
+        )
+        # Display in Streamlit
+        st.plotly_chart(fig, use_container_width=True)
+
+    elif analysis_section == "Heatmap Profiles":
+        st.subheader("📅 Time Profiles Heatmap")
+        df_time = df_selected.copy()
+
+        # Add date components
+        df_time['year'] = df_time.index.year
+        df_time['month'] = df_time.index.month
+        df_time['hour'] = df_time.index.hour
+        df_time['weekday'] = df_time.index.dayofweek  # 0 = Monday, 6 = Sunday
+        df_time['week'] = df_time.index.isocalendar().week
+
+        # Dropdown to select profile type
+        profile_type = st.selectbox(
+            "Select Profile Type",
+            ["Monthly", "Hourly", "Yearly", "Weekday", "Week of Year"]
+        )
+
+        if profile_type == "Monthly":
+            st.subheader("📅 Monthly Heatmap")
+            heatmap_data = df_time.groupby(['year', 'month'])[selected_col].mean().unstack()
+            fig = px.imshow(
+                heatmap_data,
+                labels=dict(x="Month", y="Year", color=selected_col),
+                x=["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+                y=heatmap_data.index,
+                aspect="auto",
+                color_continuous_scale="Viridis"
+            )
+            fig.update_layout(
+                title="Monthly Heatmap",
+                xaxis_title="Month",
+                yaxis_title="Year",
+                coloraxis_colorbar=dict(
+                    title=selected_col,
+                    thickness=20,
+                    len=0.8,
+                    x=1.,
+                    y=0.5,
+                    yanchor="middle",
+                    tickformat=".2f",
+                    ticks="outside"
+                )
+            )
+
+        elif profile_type == "Hourly":
+            st.subheader("⏰ Hourly Heatmap")
+            heatmap_data = df_time.groupby(['year', 'hour'])[selected_col].mean().unstack()
+            fig = px.imshow(
+                heatmap_data,
+                labels=dict(x="Hour", y="Year", color=selected_col),
+                x=[f"{h:02d}:00" for h in range(24)],  # Hours 00:00 to 23:00
+                y=heatmap_data.index,
+                aspect="auto",
+                color_continuous_scale="Viridis"
+            )
+            fig.update_layout(
+                title="Hourly Heatmap",
+                xaxis_title="Hour of Day",
+                yaxis_title="Year",
+                coloraxis_colorbar=dict(
+                    title=selected_col,
+                    thickness=20,
+                    len=0.8,
+                    x=1.,
+                    y=0.5,
+                    yanchor="middle",
+                    tickformat=".2f",
+                    ticks="outside"
+                )
+            )
+
+        elif profile_type == "Yearly":
+            st.subheader("📅 Yearly Heatmap")
+            heatmap_data = df_time.groupby(['year'])[selected_col].mean().to_frame().T  # Mean of 24 hours per year
+            fig = px.imshow(
+                heatmap_data,
+                labels=dict(x="Year", y="", color=selected_col),
+                x=heatmap_data.columns,
+                y=["Mean (24h)"],
+                aspect="auto",
+                color_continuous_scale="Viridis"
+            )
+            fig.update_layout(
+                title="Yearly Heatmap",
+                xaxis_title="Year",
+                yaxis_title="",
+                coloraxis_colorbar=dict(
+                    title=selected_col,
+                    thickness=20,
+                    len=0.8,
+                    x=1.,
+                    y=0.5,
+                    yanchor="middle",
+                    tickformat=".2f",
+                    ticks="outside"
+                )
+            )
+
+        elif profile_type == "Weekday":
+            st.subheader("📅 Weekday Heatmap")
+            heatmap_data = df_time.groupby(['year', 'weekday'])[selected_col].mean().unstack()
+            fig = px.imshow(
+                heatmap_data,
+                labels=dict(x="Day of Week", y="Year", color=selected_col),
+                x=["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+                y=heatmap_data.index,
+                aspect="auto",
+                color_continuous_scale="Viridis"
+            )
+            fig.update_layout(
+                title="Weekday Heatmap",
+                xaxis_title="Day of Week",
+                yaxis_title="Year",
+                coloraxis_colorbar=dict(
+                    title=selected_col,
+                    thickness=20,
+                    len=0.8,
+                    x=1.,
+                    y=0.5,
+                    yanchor="middle",
+                    tickformat=".2f",
+                    ticks="outside"
+                )
+            )
+
+        elif profile_type == "Week of Year":
+            st.subheader("📅 Week of Year Heatmap")
+            heatmap_data = df_time.groupby(['year', 'week'])[selected_col].mean().unstack()
+            fig = px.imshow(
+                heatmap_data,
+                labels=dict(x="Week of Year", y="Year", color=selected_col),
+                x=list(range(1, 54)),  # Convert range to list for x-axis
+                y=heatmap_data.index,
+                aspect="auto",
+                color_continuous_scale="Viridis"
+            )
+            fig.update_layout(
+                title="Week of Year Heatmap",
+                xaxis_title="Week of Year",
+                yaxis_title="Year",
+                coloraxis_colorbar=dict(
+                    title=selected_col,
+                    thickness=20,
+                    len=0.8,
+                    x=1.,
+                    y=0.5,
+                    yanchor="middle",
+                    tickformat=".2f",
+                    ticks="outside"
+                )
+            )
+
+        # Display the figure in Streamlit
         st.plotly_chart(fig, use_container_width=True)
 
 # --- MAIN ROUTING ---
