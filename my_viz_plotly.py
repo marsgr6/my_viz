@@ -3315,7 +3315,7 @@ def time_series_analysis():
     time_granularity = st.sidebar.selectbox(
         "Select summarization frequency",
         ["None", "Hourly", "Daily", "Weekly", "Monthly", "Quarterly", "Yearly"],
-        index=1
+        index=0
     )
     window = st.sidebar.number_input("Rolling Window (set 0 for no smoothing)", min_value=0, max_value=60, value=0)
 
