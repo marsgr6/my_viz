@@ -1473,6 +1473,8 @@ def visualization():
                 import re
                 from scipy.stats import t
 
+                # Assuming PALETTE, data, risk_it_all, categorical_cols, numeric_cols, and st are defined elsewhere
+
                 x_cols = data.columns if risk_it_all else categorical_cols
                 y_cols = data.columns if risk_it_all else numeric_cols
                 hue_cols = ['None'] + (data.columns.tolist() if risk_it_all else categorical_cols)
@@ -1490,6 +1492,7 @@ def visualization():
                 show_markers = st.sidebar.checkbox("Show Markers", value=True)
                 band_interval = st.sidebar.checkbox("Show Band in Lineplot (CI)", value=False)
                 time_series = st.sidebar.checkbox("Time is here", value=False)
+                aggregation_method = st.sidebar.selectbox("Aggregation Method", ["Mean", "Sum"], index=0) if not time_series else "Raw"
                 ci_level = st.sidebar.selectbox("Confidence Interval Level", ["68%", "95%", "99%"], index=1) if (band_interval and not time_series) else "95%"
                 ci_level_value = {"68%": 0.68, "95%": 0.95, "99%": 0.99}[ci_level]
 
@@ -1654,7 +1657,6 @@ def visualization():
                             line_color = color_map[hue_val]
 
                             # Determine if this hue value should show in the legend
-                            # Show legend only for the first occurrence of this hue value
                             show_in_legend = hue_val not in seen_hue_values
                             if show_in_legend:
                                 seen_hue_values.add(hue_val)
@@ -1663,11 +1665,9 @@ def visualization():
                                 # Validate var_x is object (e.g., date) and var_y is numerical
                                 is_object = False
                                 if isinstance(plot_data[var_x].dtype, pd.CategoricalDtype):
-                                    # For categorical columns, check the dtype of the categories
                                     if plot_data[var_x].cat.categories.dtype.name == 'object':
                                         is_object = True
                                 else:
-                                    # For non-categorical columns, check the dtype directly
                                     if plot_data[var_x].dtype.name == 'object':
                                         is_object = True
 
@@ -1694,17 +1694,12 @@ def visualization():
                                     showlegend=show_in_legend
                                 )
                             else:
-                                # Prepare grouping columns (only include non-None columns, avoid hue if same as var_x)
-                                group_cols = [var_x]
-                                if hue_used and hue_used != var_x:
-                                    group_cols.append(hue_used)
-                                if facet_col_used:
-                                    group_cols.append(facet_col_used)
-                                if facet_row_used:
-                                    group_cols.append(facet_row_used)
+                                # Prepare grouping columns and remove duplicates
+                                group_cols = list(dict.fromkeys([col for col in [var_x, hue_used, facet_col_used, facet_row_used] if col is not None and col != var_x]))
+                                group_cols = [var_x] + group_cols  # Ensure var_x is first
 
-                                # Group by selected columns and aggregate mean, std, and count
-                                grouped = plot_data.groupby(group_cols)[var_y].agg(['mean', 'std', 'count']).reset_index()
+                                # Group by selected columns and aggregate mean, std, count, and sum
+                                grouped = plot_data.groupby(group_cols)[var_y].agg(['mean', 'std', 'count', 'sum']).reset_index()
 
                                 # Filter grouped data for this facet and hue
                                 sub = grouped.copy()
@@ -1715,25 +1710,27 @@ def visualization():
                                 if facet_col_used:
                                     sub = sub[sub[facet_col_used] == col_val]
 
-                                if sub.empty or sub['count'].iloc[0] < 2:  # Skip if empty or insufficient sample size
+                                if sub.empty or sub['count'].iloc[0] < 2:
                                     continue
 
                                 # Calculate confidence intervals using t.interval with selected CI level
                                 alpha = 1 - ci_level_value
-                                sub['se'] = sub['std'] / np.sqrt(sub['count'])  # Standard error
+                                sub['se'] = sub['std'] / np.sqrt(sub['count'])
                                 sub['ci_lower'], sub['ci_upper'] = t.interval(
                                     ci_level_value,
                                     sub['count'] - 1,
                                     loc=sub['mean'],
                                     scale=sub['se']
                                 )
-                                # CI half-width for plotting (symmetric CI)
                                 sub['ci'] = (sub['ci_upper'] - sub['ci_lower']) / 2
+
+                                # Select y-values based on aggregation method
+                                y_values = sub['sum'] if aggregation_method == "Sum" else sub['mean']
 
                                 # Plot line with error bars if band_interval is enabled
                                 scatter_kwargs = dict(
                                     x=sub[var_x],
-                                    y=sub['mean'],
+                                    y=y_values,
                                     mode='lines' + ('+markers' if show_markers else ''),
                                     name=str(hue_val) if hue_val else "Line",
                                     legendgroup=str(hue_val) if hue_val else None,
@@ -1745,37 +1742,37 @@ def visualization():
                                     ),
                                     showlegend=show_in_legend
                                 )
-                                if band_interval:
+                                if band_interval and aggregation_method == "Mean":
                                     scatter_kwargs['error_y'] = dict(
                                         type='data',
                                         symmetric=True,
                                         array=sub['ci'],
                                         thickness=1.5,
-                                        width=5,  # Width of the error bar caps
+                                        width=5,
                                         color=line_color
                                     )
 
                             fig.add_trace(go.Scatter(**scatter_kwargs), row=row_idx, col=col_idx)
 
-                # Update layout with selected CI level in title and preserve shared axes
+                # Update layout
                 fig.update_layout(
                     width=1000,
                     height=400 * n_rows,
-                    title=f"{'Time Series ' if time_series else ''}Lineplot: {var_y} vs {var_x}" + (f" with {ci_level} CI" if not time_series else ""),
+                    title=f"{'Time Series ' if time_series else ''}Lineplot: {aggregation_method} of {var_y} vs {var_x}" + (f" with {ci_level} CI" if not time_series and aggregation_method == "Mean" else ""),
                     showlegend=True,
                     legend_title=hue_used if hue_used else None
                 )
 
-                # Add axis titles to each subplot without breaking shared axes
+                # Add axis titles to each subplot
                 if facet_row_used or facet_col_used:
                     for i in range(1, n_rows + 1):
                         for j in range(1, n_cols + 1):
                             fig.update_xaxes(title_text=var_x, row=i, col=j, showticklabels=True)
-                            fig.update_yaxes(title_text=var_y, row=i, col=j, showticklabels=True)
+                            fig.update_yaxes(title_text=f"{aggregation_method} of {var_y}", row=i, col=j, showticklabels=True)
 
                 # Render plot
                 plot_placeholder = st.empty()
-                plot_placeholder.plotly_chart(fig, use_container_width=True, key=f"lineplot_{var_x}_{var_y}_{hue_used}")
+                plot_placeholder.plotly_chart(fig, use_container_width=True, key=f"lineplot_{var_x}_{var_y}_{hue_used}_{aggregation_method}")
 
             # --- Ridges sometime are nice ---
             elif plot_type == 'ridges':
@@ -3224,6 +3221,7 @@ def about():
 
     """)
 
+
 def time_series_analysis():
     import plotly.express as px
     import plotly.graph_objects as go
@@ -3249,7 +3247,9 @@ def time_series_analysis():
             "Temporal Profiles",
             "Calendar Heatmap",
             "Heatmap Profiles",
-            "Forecasting"
+            "Forecasting",
+            "Changepoint Analysis",
+            "Trend Analysis"
         ]
     )
 
@@ -3262,8 +3262,12 @@ def time_series_analysis():
         if source_type == "Upload CSV":
             uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
             if uploaded_file:
-                df = pd.read_csv(uploaded_file, na_values=na_values)
-                st.success("✅ File successfully uploaded!")
+                try:
+                    df = pd.read_csv(uploaded_file, na_values=na_values)
+                    st.success("✅ File successfully uploaded!")
+                except Exception as e:
+                    st.error(f"❌ Failed to load CSV: {e}")
+                    st.stop()
 
         else:
             github_url = st.text_input("Paste GitHub CSV URL")
@@ -3285,17 +3289,34 @@ def time_series_analysis():
                     st.stop()
 
         if df is not None:
+            # Allow user to select the date column
+            date_col = st.selectbox("Select the date column", df.columns, index=0)
             date_format = st.radio(
-                "Does your date use day-first format?",
-                options=[True, False],
-                format_func=lambda x: "Day First (DD/MM/YYYY)" if x else "Month First (MM/DD/YYYY)"
+                "Select date format",
+                options=["DD/MM/YYYY (Day First)", "MM/DD/YYYY (Month First)"],
+                index=0
             )
-            date_col = df.columns[0]
-            df[date_col] = pd.to_datetime(df[date_col], dayfirst=date_format, errors='coerce')
-            df = df.dropna(subset=[date_col])
-            df = df.sort_values(by=date_col).set_index(date_col)
-            st.session_state['df'] = df
-            st.success("✅ Date parsing and preparation complete. Proceed to other sections from the sidebar.")
+            dayfirst = date_format == "DD/MM/YYYY (Day First)"
+
+            try:
+                # Parse dates with specified format
+                df[date_col] = pd.to_datetime(df[date_col], dayfirst=dayfirst, errors='coerce')
+                # Check for parsing issues
+                invalid_dates = df[date_col].isna().sum()
+                if invalid_dates > 0:
+                    st.warning(f"⚠️ {invalid_dates} rows could not be parsed as dates and will be removed.")
+                df = df.dropna(subset=[date_col])
+                if df.empty:
+                    st.error("❌ No valid dates remain after parsing. Please check the date column and format.")
+                    st.stop()
+                df = df.sort_values(by=date_col).set_index(date_col)
+                st.session_state['df'] = df
+                st.success(f"✅ Data loaded successfully! {len(df)} rows processed.")
+                st.write("**Preview of Loaded Data (First 5 Rows):**")
+                st.write(df.head())
+            except Exception as e:
+                st.error(f"❌ Error parsing dates: {e}")
+                st.stop()
         st.stop()
 
     # Require data for other sections
@@ -3318,6 +3339,11 @@ def time_series_analysis():
         ["None", "Hourly", "Daily", "Weekly", "Monthly", "Quarterly", "Yearly"],
         index=0
     )
+    aggregation_method = st.sidebar.selectbox(
+        "Aggregation Method",
+        ["Mean", "Sum"],
+        index=0
+    ) if time_granularity != "None" else "Raw"
     window = st.sidebar.number_input("Rolling Window (set 0 for no smoothing)", min_value=0, max_value=60, value=0)
 
     resample_map = {
@@ -3332,35 +3358,110 @@ def time_series_analysis():
     resample_freq = resample_map[time_granularity]
 
     if resample_freq:
-        resampled = df_selected.resample(resample_freq).agg(['mean', 'std'])
-        resampled.columns = ['mean', 'std']
+        resampled = df_selected.resample(resample_freq).agg({selected_col: aggregation_method.lower()})
+        resampled.columns = ['value']
         if window > 0:
-            resampled['mean'] = resampled['mean'].rolling(window).mean()
-            resampled['std'] = resampled['std'].rolling(window).mean()
+            resampled['value'] = resampled['value'].rolling(window).mean()
+            resampled['std'] = resampled['value'].rolling(window).std()
+        else:
+            resampled['std'] = resampled['value'].std()
         df_summary = resampled
     else:
         df_summary = df_selected.copy()
-        df_summary['mean'] = df_summary[selected_col].rolling(window).mean() if window > 0 else df_summary[selected_col]
+        df_summary['value'] = df_summary[selected_col].rolling(window).mean() if window > 0 else df_summary[selected_col]
         df_summary['std'] = df_summary[selected_col].rolling(window).std() if window > 0 else df_summary[selected_col].std()
 
     if analysis_section == "Time Series Visualization":
         st.subheader("📈 Time Series Visualization")
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df_summary.index, y=df_summary['mean'], mode='lines', name='Mean'))
-        fig.add_trace(go.Scatter(x=df_summary.index, y=df_summary['mean'] + df_summary['std'], mode='lines', name='Upper Band', line=dict(dash='dot')))
-        fig.add_trace(go.Scatter(x=df_summary.index, y=df_summary['mean'] - df_summary['std'], mode='lines', name='Lower Band', line=dict(dash='dot')))
-        fig.update_layout(title="Summarized Time Series", xaxis_title="Date", yaxis_title=selected_col)
+        fig.add_trace(go.Scatter(x=df_summary.index, y=df_summary['value'], mode='lines', name=aggregation_method if resample_freq else 'Raw'))
+        if window > 0 or resample_freq:
+            fig.add_trace(go.Scatter(x=df_summary.index, y=df_summary['value'] + df_summary['std'], mode='lines', name='Upper Band', line=dict(dash='dot')))
+            fig.add_trace(go.Scatter(x=df_summary.index, y=df_summary['value'] - df_summary['std'], mode='lines', name='Lower Band', line=dict(dash='dot')))
+        fig.update_layout(
+            title=f"Time Series ({aggregation_method if resample_freq else 'Raw'})",
+            xaxis_title="Date",
+            yaxis_title=selected_col
+        )
         st.plotly_chart(fig, use_container_width=True)
 
     elif analysis_section == "Decomposition & ACF/PACF":
+        import plotly.subplots as sp
+
         st.subheader("📉 Seasonal Decomposition")
-        window = st.slider("Seasonal window for decomposition", 2, 60, 12)
-        try:
-            result = seasonal_decompose(df[selected_col], model='additive', period=window)
-            fig = result.plot()
-            st.pyplot(fig)
-        except:
-            st.warning("Decomposition failed — try adjusting the window size.")
+        decomposition_method = st.selectbox("Select Decomposition Method", ["Statsmodels", "Prophet"], index=0)
+
+        if decomposition_method == "Statsmodels":
+            window = st.slider("Seasonal window for decomposition", 2, 60, 12)
+            try:
+                result = seasonal_decompose(df[selected_col], model='additive', period=window)
+                fig = result.plot()
+                st.pyplot(fig)
+            except Exception as e:
+                st.warning(f"Decomposition failed: {e}. Try adjusting the window size.")
+        else:  # Prophet
+            from prophet import Prophet
+            # Prepare data for Prophet
+            df_prophet = df_selected.reset_index()
+            first_column_name = df_prophet.columns[0]
+            df_prophet = df_prophet.rename(columns={first_column_name: 'ds', selected_col: 'y'})
+            df_prophet = df_prophet[['ds', 'y']].copy()
+            df_prophet['y'] = df_prophet['y'].fillna(method='ffill')
+
+            if df_prophet.empty or df_prophet['ds'].isna().all() or df_prophet['y'].isna().all():
+                st.error("No valid data available for Prophet decomposition. Please check the dataset.")
+                return
+
+            try:
+                model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=True)
+                model.fit(df_prophet)
+                forecast = model.predict(df_prophet[['ds']])
+
+                # Create subplots for Prophet components
+                fig = sp.make_subplots(
+                    rows=4, cols=1,
+                    subplot_titles=("Trend", "Yearly Seasonality", "Weekly Seasonality", "Daily Seasonality"),
+                    vertical_spacing=0.1
+                )
+
+                # Trend
+                fig.add_trace(
+                    go.Scatter(x=forecast['ds'], y=forecast['trend'], mode='lines', name='Trend'),
+                    row=1, col=1
+                )
+                # Yearly Seasonality
+                if 'yearly' in forecast.columns:
+                    fig.add_trace(
+                        go.Scatter(x=forecast['ds'], y=forecast['yearly'], mode='lines', name='Yearly'),
+                        row=2, col=1
+                    )
+                # Weekly Seasonality
+                if 'weekly' in forecast.columns:
+                    fig.add_trace(
+                        go.Scatter(x=forecast['ds'], y=forecast['weekly'], mode='lines', name='Weekly'),
+                        row=3, col=1
+                    )
+                # Daily Seasonality
+                if 'daily' in forecast.columns:
+                    fig.add_trace(
+                        go.Scatter(x=forecast['ds'], y=forecast['daily'], mode='lines', name='Daily'),
+                        row=4, col=1
+                    )
+
+                fig.update_layout(
+                    height=800,
+                    title_text=f"Prophet Decomposition of {selected_col}",
+                    showlegend=False
+                )
+                fig.update_yaxes(title_text=selected_col, row=1, col=1)
+                fig.update_yaxes(title_text="Yearly", row=2, col=1)
+                fig.update_yaxes(title_text="Weekly", row=3, col=1)
+                fig.update_yaxes(title_text="Daily", row=4, col=1)
+                fig.update_xaxes(title_text="Date", row=4, col=1)
+
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.error(f"Prophet decomposition failed: {e}")
 
         st.subheader("🔁 ACF and PACF")
         fig_acf, ax = plt.subplots(1, 2, figsize=(12, 4))
@@ -3373,16 +3474,22 @@ def time_series_analysis():
     elif analysis_section == "Anomaly Detection":
         st.subheader("🚨 Anomaly Detection (Isolation Forest)")
         contamination = st.slider("Contamination (expected anomaly fraction)", 0.01, 0.5, 0.05, 0.01)
-        df_anom = df_summary.copy().dropna(subset=['mean'])
-        df_anom['anomaly'] = IsolationForest(contamination=contamination, random_state=42).fit_predict(df_anom[['mean']])
+        df_anom = df_summary.copy().dropna(subset=['value'])
+        df_anom['anomaly'] = IsolationForest(contamination=contamination, random_state=42).fit_predict(df_anom[['value']])
         df_anom['anomaly'] = df_anom['anomaly'].map({1: 0, -1: 1})
 
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df_anom.index, y=df_anom['mean'], mode='lines', name='Mean'))
-        fig.add_trace(go.Scatter(x=df_anom[df_anom['anomaly'] == 1].index,
-                                 y=df_anom[df_anom['anomaly'] == 1]['mean'],
-                                 mode='markers', name='Anomaly', marker=dict(color='red', size=8)))
-        fig.update_layout(title="Anomaly Detection", xaxis_title="Date", yaxis_title=selected_col)
+        fig.add_trace(go.Scatter(x=df_anom.index, y=df_anom['value'], mode='lines', name=aggregation_method if resample_freq else 'Raw'))
+        fig.add_trace(go.Scatter(
+            x=df_anom[df_anom['anomaly'] == 1].index,
+            y=df_anom[df_anom['anomaly'] == 1]['value'],
+            mode='markers', name='Anomaly', marker=dict(color='red', size=8)
+        ))
+        fig.update_layout(
+            title=f"Anomaly Detection ({aggregation_method if resample_freq else 'Raw'})",
+            xaxis_title="Date",
+            yaxis_title=selected_col
+        )
         st.plotly_chart(fig, use_container_width=True)
 
     elif analysis_section == "Temporal Profiles":
@@ -3405,72 +3512,64 @@ def time_series_analysis():
             fig = px.box(df_profile, x='profile', y=selected_col, title=f"Boxplot by {profile_unit}")
             st.plotly_chart(fig, use_container_width=True)
         else:
-            profile_summary = df_profile.groupby('profile')[selected_col].agg(['mean', 'std'])
+            profile_summary = df_profile.groupby('profile')[selected_col].agg([aggregation_method.lower(), 'std'])
+            profile_summary.columns = ['value', 'std']
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=profile_summary.index, y=profile_summary['mean'], mode='lines+markers', name='Mean'))
-            fig.add_trace(go.Scatter(x=profile_summary.index, y=profile_summary['mean'] + profile_summary['std'], mode='lines', name='Upper', line=dict(dash='dot')))
-            fig.add_trace(go.Scatter(x=profile_summary.index, y=profile_summary['mean'] - profile_summary['std'], mode='lines', name='Lower', line=dict(dash='dot')))
-            fig.update_layout(title=f"Profile by {profile_unit}", xaxis_title=profile_unit, yaxis_title=selected_col)
+            fig.add_trace(go.Scatter(x=profile_summary.index, y=profile_summary['value'], mode='lines+markers', name=aggregation_method))
+            fig.add_trace(go.Scatter(x=profile_summary.index, y=profile_summary['value'] + profile_summary['std'], mode='lines', name='Upper', line=dict(dash='dot')))
+            fig.add_trace(go.Scatter(x=profile_summary.index, y=profile_summary['value'] - profile_summary['std'], mode='lines', name='Lower', line=dict(dash='dot')))
+            fig.update_layout(
+                title=f"Profile by {profile_unit} ({aggregation_method})",
+                xaxis_title=profile_unit,
+                yaxis_title=selected_col
+            )
             st.plotly_chart(fig, use_container_width=True)
 
-
-
     elif analysis_section == "Calendar Heatmap":
-        from plotly_calplot import calplot
-
         st.subheader("📆 Calendar Heatmap (Daily)")
-        # Resample the selected column to daily frequency and compute the mean
-        daily_series = df_selected[selected_col].resample('D').mean()
-        # Handle missing values by filling with 0 (or adjust as needed)
+        daily_series = df_selected[selected_col].resample('D').agg(aggregation_method.lower())
         daily_series = daily_series.fillna(0)
-        # Convert to DataFrame
         daily_df = daily_series.reset_index()
-        daily_df.columns = ['date', selected_col]  # Keep the original column name
+        daily_df.columns = ['date', selected_col]
 
-        # Validate data
         if daily_df[selected_col].isna().all() or daily_df[selected_col].eq(daily_df[selected_col].iloc[0]).all():
             st.warning("Data contains only NaN or constant values, which may prevent the color bar from displaying.")
             return
 
-        # Create the calendar heatmap
         fig = calplot(
             daily_df,
             x="date",
             y=selected_col,
-            colorscale="Viridis",  # Use Blues colormap
-            showscale=True  # Explicitly enable the color bar
+            colorscale="Viridis",
+            showscale=True
         )
-        # Customize the color bar and layout
         fig.update_layout(
-            title=f"Calendar Heatmap: {selected_col}",
+            title=f"Calendar Heatmap: {selected_col} ({aggregation_method})",
             coloraxis_colorbar=dict(
-                title=selected_col,  # Color bar title
+                title=selected_col,
                 titlefont=dict(size=14),
-                thickness=10,  # Thickness of the color bar
-                len=0.8,  # Length of the color bar
-                x=0.95,  # Move closer to the plot to ensure visibility
+                thickness=10,
+                len=0.8,
+                x=0.95,
                 y=0.5,
                 yanchor="middle",
-                tickformat=".2f",  # Format ticks to 2 decimal places
+                tickformat=".2f",
                 ticks="outside"
             ),
-            height=400  # Adjust height for each year’s plot
+            height=400
         )
-        # Display in Streamlit
         st.plotly_chart(fig, use_container_width=True)
 
     elif analysis_section == "Heatmap Profiles":
         st.subheader("📅 Time Profiles Heatmap")
         df_time = df_selected.copy()
 
-        # Add date components
         df_time['year'] = df_time.index.year
         df_time['month'] = df_time.index.month
         df_time['hour'] = df_time.index.hour
-        df_time['weekday'] = df_time.index.dayofweek  # 0 = Monday, 6 = Sunday
+        df_time['weekday'] = df_time.index.dayofweek
         df_time['week'] = df_time.index.isocalendar().week
 
-        # Dropdown to select profile type
         profile_type = st.selectbox(
             "Select Profile Type",
             ["Monthly", "Hourly", "Yearly", "Weekday", "Week of Year"]
@@ -3478,7 +3577,7 @@ def time_series_analysis():
 
         if profile_type == "Monthly":
             st.subheader("📅 Monthly Heatmap")
-            heatmap_data = df_time.groupby(['year', 'month'])[selected_col].mean().unstack()
+            heatmap_data = df_time.groupby(['year', 'month'])[selected_col].agg(aggregation_method.lower()).unstack()
             fig = px.imshow(
                 heatmap_data,
                 labels=dict(x="Month", y="Year", color=selected_col),
@@ -3488,7 +3587,7 @@ def time_series_analysis():
                 color_continuous_scale="Viridis"
             )
             fig.update_layout(
-                title="Monthly Heatmap",
+                title=f"Monthly Heatmap ({aggregation_method})",
                 xaxis_title="Month",
                 yaxis_title="Year",
                 coloraxis_colorbar=dict(
@@ -3505,17 +3604,17 @@ def time_series_analysis():
 
         elif profile_type == "Hourly":
             st.subheader("⏰ Hourly Heatmap")
-            heatmap_data = df_time.groupby(['year', 'hour'])[selected_col].mean().unstack()
+            heatmap_data = df_time.groupby(['year', 'hour'])[selected_col].agg(aggregation_method.lower()).unstack()
             fig = px.imshow(
                 heatmap_data,
                 labels=dict(x="Hour", y="Year", color=selected_col),
-                x=[f"{h:02d}:00" for h in range(24)],  # Hours 00:00 to 23:00
+                x=[f"{h:02d}:00" for h in range(24)],
                 y=heatmap_data.index,
                 aspect="auto",
                 color_continuous_scale="Viridis"
             )
             fig.update_layout(
-                title="Hourly Heatmap",
+                title=f"Hourly Heatmap ({aggregation_method})",
                 xaxis_title="Hour of Day",
                 yaxis_title="Year",
                 coloraxis_colorbar=dict(
@@ -3532,17 +3631,17 @@ def time_series_analysis():
 
         elif profile_type == "Yearly":
             st.subheader("📅 Yearly Heatmap")
-            heatmap_data = df_time.groupby(['year'])[selected_col].mean().to_frame().T  # Mean of 24 hours per year
+            heatmap_data = df_time.groupby(['year'])[selected_col].agg(aggregation_method.lower()).to_frame().T
             fig = px.imshow(
                 heatmap_data,
                 labels=dict(x="Year", y="", color=selected_col),
                 x=heatmap_data.columns,
-                y=["Mean (24h)"],
+                y=["Value"],
                 aspect="auto",
                 color_continuous_scale="Viridis"
             )
             fig.update_layout(
-                title="Yearly Heatmap",
+                title=f"Yearly Heatmap ({aggregation_method})",
                 xaxis_title="Year",
                 yaxis_title="",
                 coloraxis_colorbar=dict(
@@ -3559,7 +3658,7 @@ def time_series_analysis():
 
         elif profile_type == "Weekday":
             st.subheader("📅 Weekday Heatmap")
-            heatmap_data = df_time.groupby(['year', 'weekday'])[selected_col].mean().unstack()
+            heatmap_data = df_time.groupby(['year', 'weekday'])[selected_col].agg(aggregation_method.lower()).unstack()
             fig = px.imshow(
                 heatmap_data,
                 labels=dict(x="Day of Week", y="Year", color=selected_col),
@@ -3569,7 +3668,7 @@ def time_series_analysis():
                 color_continuous_scale="Viridis"
             )
             fig.update_layout(
-                title="Weekday Heatmap",
+                title=f"Weekday Heatmap ({aggregation_method})",
                 xaxis_title="Day of Week",
                 yaxis_title="Year",
                 coloraxis_colorbar=dict(
@@ -3586,17 +3685,17 @@ def time_series_analysis():
 
         elif profile_type == "Week of Year":
             st.subheader("📅 Week of Year Heatmap")
-            heatmap_data = df_time.groupby(['year', 'week'])[selected_col].mean().unstack()
+            heatmap_data = df_time.groupby(['year', 'week'])[selected_col].agg(aggregation_method.lower()).unstack()
             fig = px.imshow(
                 heatmap_data,
                 labels=dict(x="Week of Year", y="Year", color=selected_col),
-                x=list(range(1, 54)),  # Convert range to list for x-axis
+                x=list(range(1, 54)),
                 y=heatmap_data.index,
                 aspect="auto",
                 color_continuous_scale="Viridis"
             )
             fig.update_layout(
-                title="Week of Year Heatmap",
+                title=f"Week of Year Heatmap ({aggregation_method})",
                 xaxis_title="Week of Year",
                 yaxis_title="Year",
                 coloraxis_colorbar=dict(
@@ -3611,51 +3710,26 @@ def time_series_analysis():
                 )
             )
 
-        # Display the figure in Streamlit
         st.plotly_chart(fig, use_container_width=True)
 
-    # New Forecasting Section
     elif analysis_section == "Forecasting":
         from prophet import Prophet
 
-        st.subheader("📈 Forecasting for " + selected_col)
+        st.subheader(f"📈 Forecasting for {selected_col}")
         
-        # Prepare data based on time granularity
         df_prophet = df_selected.reset_index()
-        first_column_name = df_prophet.columns[0]  # Get the name of the first column (e.g., the index name)
+        first_column_name = df_prophet.columns[0]
         df_prophet = df_prophet.rename(columns={first_column_name: 'ds', selected_col: 'y'})
-        
-        # Debug: Check the DataFrame structure
-        #st.write("Raw DataFrame for Prophet:", df_prophet.head())
-        
-        # Resample data based on selected granularity
-        if time_granularity == "Hourly":
-            df_prophet = df_prophet.resample('H', on='ds').mean().reset_index()
-        elif time_granularity == "Daily":
-            df_prophet = df_prophet.resample('D', on='ds').mean().reset_index()
-        elif time_granularity == "Weekly":
-            df_prophet = df_prophet.resample('W', on='ds').mean().reset_index()
-        elif time_granularity == "Monthly":
-            df_prophet = df_prophet.resample('M', on='ds').mean().reset_index()
-        elif time_granularity == "Quarterly":
-            df_prophet = df_prophet.resample('Q', on='ds').mean().reset_index()
-        elif time_granularity == "Yearly":
-            df_prophet = df_prophet.resample('Y', on='ds').mean().reset_index()
-        # If "None" or invalid, use the original data as-is
-        
-        # Ensure only 'ds' and 'y' columns are present
-        if df_prophet.columns.tolist() != ['ds', 'y']:
-            df_prophet = df_prophet[['ds', 'y']].copy()  # Keep only required columns
-        
-        # Handle missing values
-        df_prophet['y'] = df_prophet['y'].fillna(method='ffill')  # Forward fill missing values
-        
-        # Validate data
+
+        if time_granularity != "None":
+            df_prophet = df_prophet.resample(resample_freq, on='ds').agg({'y': aggregation_method.lower()}).reset_index()
+        df_prophet = df_prophet[['ds', 'y']].copy()
+        df_prophet['y'] = df_prophet['y'].fillna(method='ffill')
+
         if df_prophet.empty or df_prophet['ds'].isna().all() or df_prophet['y'].isna().all():
             st.error("No valid data available for forecasting. Please check the dataset.")
             return
 
-        # Initialize and fit the Prophet model
         try:
             model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=True)
             model.fit(df_prophet)
@@ -3663,34 +3737,67 @@ def time_series_analysis():
             st.error(f"Error fitting Prophet model: {e}")
             return
 
-        # Forecast period selection (adjusted based on granularity)
-        if time_granularity == "Hourly":
-            forecast_period = st.slider("Select forecast period (hours)", 24, 8760, 720)  # Up to 1 year in hours
-        elif time_granularity == "Daily":
-            forecast_period = st.slider("Select forecast period (days)", 7, 365, 30)  # Up to 1 year in days
-        elif time_granularity == "Weekly":
-            forecast_period = st.slider("Select forecast period (weeks)", 1, 52, 4)  # Up to 1 year in weeks
-        elif time_granularity == "Monthly":
-            forecast_period = st.slider("Select forecast period (months)", 1, 12, 3)  # Up to 1 year in months
-        elif time_granularity == "Quarterly":
-            forecast_period = st.slider("Select forecast period (quarters)", 1, 4, 1)  # Up to 1 year in quarters
-        elif time_granularity == "Yearly":
-            forecast_period = st.slider("Select forecast period (years)", 1, 5, 1)  # Up to 5 years
-        else:  # Default to daily if "None" or invalid
-            forecast_period = st.slider("Select forecast period (days)", 7, 365, 30)
+        # Define unit for slider label based on time_granularity
+        unit_map = {
+            "Hourly": "hours",
+            "Daily": "days",
+            "Weekly": "weeks",
+            "Monthly": "months",
+            "Quarterly": "quarters",
+            "Yearly": "years",
+            "None": "days"
+        }
+        unit = unit_map.get(time_granularity, "days")
 
-        # Create future dataframe with the appropriate period
-        future = model.make_future_dataframe(periods=forecast_period, freq={
-            "Hourly": 'H',
-            "Daily": 'D',
-            "Weekly": 'W',
-            "Monthly": 'M',
-            "Quarterly": 'Q',
-            "Yearly": 'Y'
-        }.get(time_granularity, 'D'))  # Default to daily if invalid
+        # Default slider (used when time_granularity is "None")
+        if time_granularity == "None":
+            forecast_period = st.slider(
+                f"Select forecast period ({unit})",
+                1, 365, 30,
+                format="%d"
+            )
+
+        # Override with specific sliders based on time_granularity
+        if time_granularity == "Hourly":
+            forecast_period = st.slider(
+                f"Select forecast period ({unit})",
+                24, 8760, 720,
+                format="%d"
+            )
+        elif time_granularity == "Daily":
+            forecast_period = st.slider(
+                f"Select forecast period ({unit})",
+                7, 365, 30,
+                format="%d"
+            )
+        elif time_granularity == "Weekly":
+            forecast_period = st.slider(
+                f"Select forecast period ({unit})",
+                1, 52, 4,
+                format="%d"
+            )
+        elif time_granularity == "Monthly":
+            forecast_period = st.slider(
+                f"Select forecast period ({unit})",
+                1, 12, 3,
+                format="%d"
+            )
+        elif time_granularity == "Quarterly":
+            forecast_period = st.slider(
+                f"Select forecast period ({unit})",
+                1, 4, 1,
+                format="%d"
+            )
+        elif time_granularity == "Yearly":
+            forecast_period = st.slider(
+                f"Select forecast period ({unit})",
+                1, 5, 1,
+                format="%d"
+            )
+
+        future = model.make_future_dataframe(periods=forecast_period, freq=resample_map.get(time_granularity, 'D'))
         forecast = model.predict(future)
 
-        # Plot the forecast
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df_prophet['ds'], y=df_prophet['y'], name='Historical Data', mode='lines'))
         fig.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], name='Forecast', mode='lines'))
@@ -3699,24 +3806,295 @@ def time_series_analysis():
         fig.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_upper'], fill='tonexty', mode='none', fillcolor='rgba(0,100,80,0.2)', name='Confidence Interval'))
         
         fig.update_layout(
-            title=f"Forecast for {selected_col}",
+            title=f"Forecast for {selected_col} ({aggregation_method if time_granularity != 'None' else 'Raw'})",
+            xaxis_title="Date",
+            yaxis_title=selected_col,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    elif analysis_section == "Changepoint Analysis":
+        from prophet import Prophet
+        import numpy as np
+        import pandas as pd
+
+        st.subheader("🔍 Changepoint Analysis")
+
+        mode = st.radio("Choose changepoint mode", [
+            "Default (Prophet auto-detection)",
+            "Specify Number of Changepoints"
+        ])
+
+        # Prepare data
+        df_prophet = df_selected.reset_index()
+        first_column_name = df_prophet.columns[0]
+        df_prophet = df_prophet.rename(columns={first_column_name: 'ds', selected_col: 'y'})
+
+        # Ensure 'ds' is datetime
+        if not pd.api.types.is_datetime64_any_dtype(df_prophet['ds']):
+            df_prophet['ds'] = pd.to_datetime(df_prophet['ds'], errors='coerce')
+            if df_prophet['ds'].isna().all():
+                st.error("No valid datetime values in 'ds' column. Please check the dataset.")
+                return
+
+        # Apply resampling if granularity is specified
+        if time_granularity != "None":
+            df_prophet = df_prophet.set_index('ds').resample(resample_map[time_granularity]).agg({'y': aggregation_method.lower()}).reset_index()
+            # Debugging: Check resampled data
+            #st.write(f"Resampled data (first 5 rows) with {aggregation_method} and {time_granularity} granularity:", df_prophet.head())
+        else:
+            df_prophet = df_prophet[['ds', 'y']].copy()
+
+        df_prophet['y'] = df_prophet['y'].fillna(method='ffill')
+
+        if df_prophet.empty or df_prophet['ds'].isna().all() or df_prophet['y'].isna().all():
+            st.error("No valid data available for changepoint analysis. Please check the dataset.")
+            return
+
+        # Set model parameters
+        n_changepoints = 25  # default
+        show_threshold = False
+
+        if mode == "Default (Prophet auto-detection)":
+            st.info("✅ Using Prophet's default changepoint detection (25 automatically positioned).")
+            show_threshold = True
+
+        elif mode == "Specify Number of Changepoints":
+            n_changepoints = st.slider("🔢 Number of changepoints to force", 1, 50, 10)
+            show_threshold = True
+
+        # Build Prophet model with adjusted settings for yearly data
+        model = Prophet(
+            yearly_seasonality=True,
+            weekly_seasonality=False,  # Disable weekly if yearly is dominant
+            daily_seasonality=False,
+            n_changepoints=n_changepoints,
+            seasonality_mode='additive'  # Explicitly set for better trend alignment
+        )
+
+        try:
+            model.fit(df_prophet)
+            forecast = model.predict(df_prophet)
+
+            # Calculate deltas
+            deltas = np.array(model.params['delta']).mean(axis=0)
+            abs_deltas = np.abs(deltas)
+
+            if show_threshold:
+                threshold = st.slider("⚠️ Slope change threshold (|Δ| > ...)", 0.0, 0.5, 0.01, 0.01)
+            else:
+                threshold = 0.0
+
+            # Select significant changepoints
+            if threshold == 0.0 or len(abs_deltas) != len(model.changepoints):
+                significant_cp = model.changepoints
+            else:
+                significant_cp = model.changepoints[abs_deltas > threshold]
+
+            # Let user choose which to plot
+            plot_cp_mode = st.selectbox(
+                "📌 Which changepoints to plot?",
+                ["Only significant changepoints (|Δ| > threshold)", "All changepoints"]
+            )
+            changepoints_to_plot = significant_cp if plot_cp_mode.startswith("Only") else model.changepoints
+
+            if len(changepoints_to_plot) == 0:
+                st.warning("⚠️ No changepoints to plot with current settings.")
+
+            # Time series plot
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=df_prophet['ds'], y=df_prophet['y'], name="Observed", mode='lines'))
+            fig.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], name="Forecast", mode='lines', line=dict(color='lightblue')))
+            fig.add_trace(go.Scatter(x=forecast['ds'], y=forecast['trend'], name="Trend", mode='lines', line=dict(color='orange', dash='dash')))
+
+            for cp in changepoints_to_plot:
+                fig.add_vline(x=pd.to_datetime(cp), line=dict(color="red", dash="dot"))
+
+            fig.update_layout(
+                title="Changepoint Detection with Prophet (Trend, Forecast & Selected Δ)",
+                xaxis_title="Date",
+                yaxis_title=selected_col,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                xaxis_range=[df_prophet['ds'].min(), df_prophet['ds'].max()]
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown(f"**🧠 {len(changepoints_to_plot)} changepoints plotted**")
+
+            with st.expander(f"📋 List of Significant Changepoints (|Δslope| > {threshold})"):
+                if len(significant_cp) > 0:
+                    cp_df = pd.DataFrame({
+                        "Changepoint": pd.to_datetime(significant_cp),
+                        "|Δslope|": abs_deltas[abs_deltas > threshold]
+                    }).reset_index(drop=True)
+                    st.dataframe(cp_df)
+                else:
+                    st.warning("No changepoints exceed the threshold.")
+
+            # Plot histogram
+            with st.expander("📊 Distribution of |Δslope| values across changepoints"):
+                fig_d = go.Figure()
+                fig_d.add_trace(go.Histogram(x=abs_deltas, nbinsx=20))
+                fig_d.update_layout(
+                    xaxis_title="|Δslope|", yaxis_title="Frequency",
+                    title="Distribution of Slope Changes",
+                    bargap=0.2
+                )
+                st.plotly_chart(fig_d, use_container_width=True)
+
+            # Show all changepoints
+            with st.expander("🧪 All changepoints and slope changes (Δ)"):
+                all_cp_df = pd.DataFrame({
+                    "Changepoint": pd.to_datetime(model.changepoints),
+                    "Δslope": deltas,
+                    "|Δslope|": abs_deltas
+                }).reset_index(drop=True)
+                st.dataframe(all_cp_df.sort_values(by="|Δslope|", ascending=False))
+
+        except Exception as e:
+            st.error(f"Changepoint detection failed: {e}")
+
+    elif analysis_section == "Trend Analysis":
+        st.subheader("📈 Trend Analysis")
+
+        # Prepare data
+        df_trend = df_summary.copy()
+        x = df_trend.index
+        y = df_trend['value']
+
+        # Linear regression for original data
+        from sklearn.linear_model import LinearRegression
+        import numpy as np
+        x_numeric = np.arange(len(x)).reshape(-1, 1)
+        y_numeric = y.values.reshape(-1, 1)
+        model_linear = LinearRegression()
+        model_linear.fit(x_numeric, y_numeric)
+        trend_linear = model_linear.predict(x_numeric).flatten()
+        slope = model_linear.coef_[0][0]
+        intercept = model_linear.intercept_[0]
+
+        # Polynomial regression for original data (degree 2)
+        from sklearn.preprocessing import PolynomialFeatures
+        poly = PolynomialFeatures(degree=2)
+        x_poly = poly.fit_transform(x_numeric)
+        model_poly = LinearRegression()
+        model_poly.fit(x_poly, y_numeric)
+        trend_poly = model_poly.predict(x_poly).flatten()
+
+        # Deseasonalized data and its trends
+        deseasonalized = y - trend_linear
+        model_linear_deseason = LinearRegression()
+        model_linear_deseason.fit(x_numeric, deseasonalized.values.reshape(-1, 1))
+        trend_linear_deseason = model_linear_deseason.predict(x_numeric).flatten()
+        slope_deseason = model_linear_deseason.coef_[0][0]
+        intercept_deseason = model_linear_deseason.intercept_[0]
+        poly_deseason = PolynomialFeatures(degree=2)
+        x_poly_deseason = poly_deseason.fit_transform(x_numeric)
+        model_poly_deseason = LinearRegression()
+        model_poly_deseason.fit(x_poly_deseason, deseasonalized.values.reshape(-1, 1))
+        trend_poly_deseason = model_poly_deseason.predict(x_poly_deseason).flatten()
+
+        # Single checkbox to control both table and plot
+        show_deseasonalized = st.checkbox("Plot deseasonalized line/trend", value=False, key="trend_toggle")
+
+        # Summary table (dynamic based on deseasonalized selection)
+        if show_deseasonalized:
+            summary_data = {
+                'Trend Type': ['Linear (Deseasonalized)', 'Polynomial (Deseasonalized)'],
+                'Min': [trend_linear_deseason.min(), trend_poly_deseason.min()],
+                'Max': [trend_linear_deseason.max(), trend_poly_deseason.max()]
+            }
+        else:
+            summary_data = {
+                'Trend Type': ['Linear', 'Polynomial'],
+                'Min': [trend_linear.min(), trend_poly.min()],
+                'Max': [trend_linear.max(), trend_poly.max()]
+            }
+
+        # Create plot
+        fig = go.Figure()
+
+        if show_deseasonalized:
+            # Plot deseasonalized data and its trends
+            fig.add_trace(go.Scatter(x=x, y=deseasonalized, mode='lines', name='Deseasonalized'))
+            fig.add_trace(go.Scatter(x=x, y=trend_linear_deseason, mode='lines', name='Linear Trend (Deseasonalized)', line=dict(dash='dash')))
+            fig.add_trace(go.Scatter(x=x, y=trend_poly_deseason, mode='lines', name='Polynomial Trend (Deseasonalized)', line=dict(dash='dot')))
+            y_max_for_annotation = deseasonalized.max()
+            regression_text = f'Linear (Deseasonalized): y = {slope_deseason:.2f}x + {intercept_deseason:.2f}'
+        else:
+            # Plot original data and its trends
+            fig.add_trace(go.Scatter(x=x, y=y, mode='lines', name=f'Observed ({aggregation_method})'))
+            fig.add_trace(go.Scatter(x=x, y=trend_linear, mode='lines', name='Linear Trend', line=dict(dash='dash')))
+            fig.add_trace(go.Scatter(x=x, y=trend_poly, mode='lines', name='Polynomial Trend', line=dict(dash='dot')))
+            y_max_for_annotation = y.max()
+            regression_text = f'Linear: y = {slope:.8f}x + {intercept:.8f}'
+
+        # Annotate min/max for the displayed trends
+        if show_deseasonalized:
+            y_linear_min = trend_linear_deseason.min()
+            y_linear_max = trend_linear_deseason.max()
+            y_poly_min = trend_poly_deseason.min()
+            y_poly_max = trend_poly_deseason.max()
+            y_poly_first = trend_poly_deseason[0]
+            y_poly_last = trend_poly_deseason[-1]
+        else:
+            y_linear_min = trend_linear.min()
+            y_linear_max = trend_linear.max()
+            y_poly_min = trend_poly.min()
+            y_poly_max = trend_poly.max()
+            y_poly_first = trend_poly[0]
+            y_poly_last = trend_poly[-1]
+
+        fig.add_annotation(
+            x=x[trend_linear.argmin()], y=y_linear_min,
+            text=f'Min: {y_linear_min:.2f}', showarrow=True, arrowhead=1, ax=20, ay=-30
+        )
+        fig.add_annotation(
+            x=x[trend_linear.argmax()], y=y_linear_max,
+            text=f'Max: {y_linear_max:.2f}', showarrow=True, arrowhead=1, ax=20, ay=30
+        )
+        fig.add_annotation(
+            x=x[trend_poly.argmin()], y=y_poly_min,
+            text=f'Poly Min: {y_poly_min:.2f}', showarrow=True, arrowhead=1, ax=-20, ay=-30
+        )
+        fig.add_annotation(
+            x=x[trend_poly.argmax()], y=y_poly_max,
+            text=f'Poly Max: {y_poly_max:.2f}', showarrow=True, arrowhead=1, ax=-20, ay=30
+        )
+        fig.add_annotation(
+            x=x[0], y=y_poly_first,
+            text=f'Poly First: {y_poly_first:.2f}', showarrow=True, arrowhead=1, ax=20, ay=0
+        )
+        fig.add_annotation(
+            x=x[-1], y=y_poly_last,
+            text=f'Poly Last: {y_poly_last:.2f}', showarrow=True, arrowhead=1, ax=-20, ay=0
+        )
+
+        # Add linear regression equation with improved formatting
+        fig.add_annotation(
+            x=x[0], y=y_max_for_annotation,
+            xref="x", yref="y",
+            text=regression_text,
+            showarrow=False,
+            align="left",
+            bgcolor="rgba(0, 0, 0, 0.7)",  # Dark background for contrast
+            font=dict(color="white", size=12),  # White text for readability
+            bordercolor="black",
+            borderwidth=1
+        )
+
+        fig.update_layout(
+            title=f"Trend Analysis for {selected_col} ({aggregation_method} with {time_granularity} granularity)",
             xaxis_title="Date",
             yaxis_title=selected_col,
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            coloraxis_colorbar=dict(
-                title=selected_col,
-                thickness=20,
-                len=0.8,
-                x=0.95,
-                y=0.5,
-                yanchor="middle",
-                tickformat=".2f",
-                ticks="outside"
-            )
+            xaxis_range=[x.min(), x.max()]
         )
 
-        # Display in Streamlit
         st.plotly_chart(fig, use_container_width=True)
+
+        st.table(pd.DataFrame(summary_data))
 
 # --- MAIN ROUTING ---
 def main():
