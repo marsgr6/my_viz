@@ -4021,7 +4021,7 @@ def time_series_analysis():
             fig.add_trace(go.Scatter(x=x, y=trend_linear_deseason, mode='lines', name='Linear Trend (Deseasonalized)', line=dict(dash='dash')))
             fig.add_trace(go.Scatter(x=x, y=trend_poly_deseason, mode='lines', name='Polynomial Trend (Deseasonalized)', line=dict(dash='dot')))
             y_max_for_annotation = deseasonalized.max()
-            regression_text = f'Linear (Deseasonalized): y = {slope_deseason:.2f}x + {intercept_deseason:.2f}'
+            regression_text = f'Linear (Deseasonalized): y = {slope_deseason:.8f}x + {intercept_deseason:.8f}'
         else:
             # Plot original data and its trends
             fig.add_trace(go.Scatter(x=x, y=y, mode='lines', name=f'Observed ({aggregation_method})'))
