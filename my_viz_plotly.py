@@ -3957,48 +3957,58 @@ def time_series_analysis():
 
     elif analysis_section == "Trend Analysis":
         st.subheader("📈 Trend Analysis")
-
+    
         # Prepare data
         df_trend = df_summary.copy()
         x = df_trend.index
         y = df_trend['value']
-
+    
         # Linear regression for original data
         from sklearn.linear_model import LinearRegression
         import numpy as np
+        from sklearn.preprocessing import PolynomialFeatures
+        from statsmodels.tsa.seasonal import STL
+    
         x_numeric = np.arange(len(x)).reshape(-1, 1)
         y_numeric = y.values.reshape(-1, 1)
+    
         model_linear = LinearRegression()
         model_linear.fit(x_numeric, y_numeric)
         trend_linear = model_linear.predict(x_numeric).flatten()
         slope = model_linear.coef_[0][0]
         intercept = model_linear.intercept_[0]
-
+    
         # Polynomial regression for original data (degree 2)
-        from sklearn.preprocessing import PolynomialFeatures
         poly = PolynomialFeatures(degree=2)
         x_poly = poly.fit_transform(x_numeric)
         model_poly = LinearRegression()
         model_poly.fit(x_poly, y_numeric)
         trend_poly = model_poly.predict(x_poly).flatten()
-
-        # Deseasonalized data and its trends
-        deseasonalized = y - trend_linear
+    
+        # === STL decomposition ===
+        stl = STL(y, period=12)  # Adjust period as appropriate for your data
+        res = stl.fit()
+        seasonal = res.seasonal
+        deseasonalized = y - seasonal
+    
+        # === Linear regression on deseasonalized data ===
         model_linear_deseason = LinearRegression()
         model_linear_deseason.fit(x_numeric, deseasonalized.values.reshape(-1, 1))
         trend_linear_deseason = model_linear_deseason.predict(x_numeric).flatten()
         slope_deseason = model_linear_deseason.coef_[0][0]
         intercept_deseason = model_linear_deseason.intercept_[0]
+    
+        # Polynomial trend on deseasonalized
         poly_deseason = PolynomialFeatures(degree=2)
         x_poly_deseason = poly_deseason.fit_transform(x_numeric)
         model_poly_deseason = LinearRegression()
         model_poly_deseason.fit(x_poly_deseason, deseasonalized.values.reshape(-1, 1))
         trend_poly_deseason = model_poly_deseason.predict(x_poly_deseason).flatten()
-
-        # Single checkbox to control both table and plot
+    
+        # Checkbox to toggle raw/deseasonalized
         show_deseasonalized = st.checkbox("Plot deseasonalized line/trend", value=False, key="trend_toggle")
-
-        # Summary table (dynamic based on deseasonalized selection)
+    
+        # Summary table
         if show_deseasonalized:
             summary_data = {
                 'Trend Type': ['Linear (Deseasonalized)', 'Polynomial (Deseasonalized)'],
@@ -4011,26 +4021,27 @@ def time_series_analysis():
                 'Min': [trend_linear.min(), trend_poly.min()],
                 'Max': [trend_linear.max(), trend_poly.max()]
             }
-
-        # Create plot
+    
+        # === Plotting ===
+        import plotly.graph_objects as go
         fig = go.Figure()
-
+    
         if show_deseasonalized:
-            # Plot deseasonalized data and its trends
             fig.add_trace(go.Scatter(x=x, y=deseasonalized, mode='lines', name='Deseasonalized'))
-            fig.add_trace(go.Scatter(x=x, y=trend_linear_deseason, mode='lines', name='Linear Trend (Deseasonalized)', line=dict(dash='dash')))
-            fig.add_trace(go.Scatter(x=x, y=trend_poly_deseason, mode='lines', name='Polynomial Trend (Deseasonalized)', line=dict(dash='dot')))
+            fig.add_trace(go.Scatter(x=x, y=trend_linear_deseason, mode='lines',
+                                     name='Linear Trend (Deseasonalized)', line=dict(dash='dash')))
+            fig.add_trace(go.Scatter(x=x, y=trend_poly_deseason, mode='lines',
+                                     name='Polynomial Trend (Deseasonalized)', line=dict(dash='dot')))
             y_max_for_annotation = deseasonalized.max()
             regression_text = f'Linear (Deseasonalized): y = {slope_deseason:.8f}x + {intercept_deseason:.8f}'
         else:
-            # Plot original data and its trends
             fig.add_trace(go.Scatter(x=x, y=y, mode='lines', name=f'Observed ({aggregation_method})'))
             fig.add_trace(go.Scatter(x=x, y=trend_linear, mode='lines', name='Linear Trend', line=dict(dash='dash')))
             fig.add_trace(go.Scatter(x=x, y=trend_poly, mode='lines', name='Polynomial Trend', line=dict(dash='dot')))
             y_max_for_annotation = y.max()
             regression_text = f'Linear: y = {slope:.8f}x + {intercept:.8f}'
-
-        # Annotate min/max for the displayed trends
+    
+        # Min/Max annotations
         if show_deseasonalized:
             y_linear_min = trend_linear_deseason.min()
             y_linear_max = trend_linear_deseason.max()
@@ -4045,45 +4056,32 @@ def time_series_analysis():
             y_poly_max = trend_poly.max()
             y_poly_first = trend_poly[0]
             y_poly_last = trend_poly[-1]
-
-        fig.add_annotation(
-            x=x[trend_linear.argmin()], y=y_linear_min,
-            text=f'Min: {y_linear_min:.2f}', showarrow=True, arrowhead=1, ax=20, ay=-30
-        )
-        fig.add_annotation(
-            x=x[trend_linear.argmax()], y=y_linear_max,
-            text=f'Max: {y_linear_max:.2f}', showarrow=True, arrowhead=1, ax=20, ay=30
-        )
-        fig.add_annotation(
-            x=x[trend_poly.argmin()], y=y_poly_min,
-            text=f'Poly Min: {y_poly_min:.2f}', showarrow=True, arrowhead=1, ax=-20, ay=-30
-        )
-        fig.add_annotation(
-            x=x[trend_poly.argmax()], y=y_poly_max,
-            text=f'Poly Max: {y_poly_max:.2f}', showarrow=True, arrowhead=1, ax=-20, ay=30
-        )
-        fig.add_annotation(
-            x=x[0], y=y_poly_first,
-            text=f'Poly First: {y_poly_first:.2f}', showarrow=True, arrowhead=1, ax=20, ay=0
-        )
-        fig.add_annotation(
-            x=x[-1], y=y_poly_last,
-            text=f'Poly Last: {y_poly_last:.2f}', showarrow=True, arrowhead=1, ax=-20, ay=0
-        )
-
-        # Add linear regression equation with improved formatting
+    
+        fig.add_annotation(x=x[trend_linear.argmin()], y=y_linear_min, text=f'Min: {y_linear_min:.2f}',
+                           showarrow=True, arrowhead=1, ax=20, ay=-30)
+        fig.add_annotation(x=x[trend_linear.argmax()], y=y_linear_max, text=f'Max: {y_linear_max:.2f}',
+                           showarrow=True, arrowhead=1, ax=20, ay=30)
+        fig.add_annotation(x=x[trend_poly.argmin()], y=y_poly_min, text=f'Poly Min: {y_poly_min:.2f}',
+                           showarrow=True, arrowhead=1, ax=-20, ay=-30)
+        fig.add_annotation(x=x[trend_poly.argmax()], y=y_poly_max, text=f'Poly Max: {y_poly_max:.2f}',
+                           showarrow=True, arrowhead=1, ax=-20, ay=30)
+        fig.add_annotation(x=x[0], y=y_poly_first, text=f'Poly First: {y_poly_first:.2f}',
+                           showarrow=True, arrowhead=1, ax=20, ay=0)
+        fig.add_annotation(x=x[-1], y=y_poly_last, text=f'Poly Last: {y_poly_last:.2f}',
+                           showarrow=True, arrowhead=1, ax=-20, ay=0)
+    
         fig.add_annotation(
             x=x[0], y=y_max_for_annotation,
             xref="x", yref="y",
             text=regression_text,
             showarrow=False,
             align="left",
-            bgcolor="rgba(0, 0, 0, 0.7)",  # Dark background for contrast
-            font=dict(color="white", size=12),  # White text for readability
+            bgcolor="rgba(0, 0, 0, 0.7)",
+            font=dict(color="white", size=12),
             bordercolor="black",
             borderwidth=1
         )
-
+    
         fig.update_layout(
             title=f"Trend Analysis for {selected_col} ({aggregation_method} with {time_granularity} granularity)",
             xaxis_title="Date",
@@ -4091,9 +4089,8 @@ def time_series_analysis():
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             xaxis_range=[x.min(), x.max()]
         )
-
+    
         st.plotly_chart(fig, use_container_width=True)
-
         st.table(pd.DataFrame(summary_data))
 
 # --- MAIN ROUTING ---
