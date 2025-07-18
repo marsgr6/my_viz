@@ -9,3 +9,4 @@ scikit-learn
 statsmodels
 plotly-calplot
 prophet
+streamlit-option-menu
