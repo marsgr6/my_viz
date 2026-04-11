@@ -10,3 +10,4 @@ statsmodels
 plotly-calplot
 prophet
 streamlit-option-menu
+plotly-calheatmap
