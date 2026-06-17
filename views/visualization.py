@@ -822,128 +822,249 @@ def visualization():
                 hue_cols = ['None'] + (data.columns.tolist() if risk_it_all else categorical_cols)
                 facet_cols = ['None'] + (categorical_cols if not risk_it_all else data.columns.tolist())
 
-                var_x = st.sidebar.selectbox("X Variable", x_cols, index=0)
-                var_y = st.sidebar.selectbox("Y Variable", y_cols, index=0)
+                # Both X and Y allow None for single-variable exploration
+                var_x = st.sidebar.selectbox("X Variable", ['None'] + list(x_cols), index=0)
+                var_y = st.sidebar.selectbox("Y Variable", ['None'] + list(y_cols), index=1)
                 hue = st.sidebar.selectbox("Hue (Color)", hue_cols, index=0)
                 facet_col = st.sidebar.selectbox("Facet Column (optional)", facet_cols, index=0)
                 facet_row = st.sidebar.selectbox("Facet Row (optional)", facet_cols, index=0)
                 tplot = st.sidebar.selectbox("Plot Type", ["boxplot", "violin"])
 
-                # Fix None values
+                # Resolve None strings
+                var_x_used = None if var_x == 'None' else var_x
+                var_y_used = None if var_y == 'None' else var_y
                 hue_used = None if hue == 'None' else hue
                 facet_col_used = None if facet_col == 'None' else facet_col
                 facet_row_used = None if facet_row == 'None' else facet_row
 
-                # Show swarm points checkbox only when:
-                # 1. No faceting (facet_col_used and facet_row_used are None)
-                # 2. hue_used is None or hue_used == var_x
-                show_swarm_checkbox = (facet_col_used is None and facet_row_used is None and (hue_used is None or hue_used == var_x))
+                # Derive orientation: numeric on X → horizontal, else vertical
+                x_is_numeric = var_x_used is not None and var_x_used in numeric_cols
+                y_is_numeric = var_y_used is not None and var_y_used in numeric_cols
+                orientation = 'h' if (x_is_numeric and not y_is_numeric) else 'v'
+
+                if orientation == 'h':
+                    num_var = var_x_used
+                    cat_var = var_y_used
+                else:
+                    num_var = var_y_used
+                    cat_var = var_x_used
+
+                # Swarm available when: no faceting AND (no hue, or hue matches category axis)
+                show_swarm_checkbox = (
+                    facet_col_used is None and facet_row_used is None
+                    and (hue_used is None or hue_used == cat_var)
+                )
                 swarm_points = st.sidebar.checkbox("Overlay Swarm of Points", value=False) if show_swarm_checkbox else False
                 band_interval = st.sidebar.checkbox("Show Band in Lineplot (CI)", value=False)
-                # Add "Time is here" checkbox for lineplot
                 time_series = st.sidebar.checkbox("Time is here", value=False) if tplot == "lineplot" else False
-                # Add CI level selector for lineplot (only when time_series is not checked)
                 ci_level = st.sidebar.selectbox("Confidence Interval Level", ["68%", "95%", "99%"], index=1) if (band_interval and not time_series) else "95%"
                 ci_level_value = {"68%": 0.68, "95%": 0.95, "99%": 0.99}[ci_level]
 
                 plot_data = data.copy()
 
-                # Force Hue column to string if selected
                 if hue_used is not None and hue_used in plot_data.columns:
                     plot_data[hue_used] = plot_data[hue_used].astype(str)
 
-                # Let the user specify custom orders
+                # Custom category orders
                 category_orders = {}
+                for axis_var, label in [(cat_var, 'x' if orientation == 'v' else 'y'),
+                                        (hue_used, 'hue'),
+                                        (facet_col_used, 'col'),
+                                        (facet_row_used, 'row')]:
+                    if axis_var and axis_var in plot_data.columns and plot_data[axis_var].dtype.name in ['object', 'category']:
+                        opts = plot_data[axis_var].dropna().unique().tolist()
+                        order = st.sidebar.multiselect(f"Custom Order for {label} {axis_var}",
+                                                       options=opts, default=sorted(opts))
+                        plot_data[axis_var] = pd.Categorical(plot_data[axis_var], categories=order, ordered=True)
+                        category_orders[axis_var] = order
 
-                if var_x in plot_data.columns and plot_data[var_x].dtype.name in ['object', 'category']:
-                    custom_order_x = st.sidebar.multiselect(
-                        f"Custom Order for x {var_x}",
-                        options=plot_data[var_x].dropna().unique().tolist(),
-                        default=sorted(plot_data[var_x].dropna().unique().tolist())
-                    )
-                    plot_data[var_x] = pd.Categorical(plot_data[var_x], categories=custom_order_x, ordered=True)
-                    category_orders[var_x] = custom_order_x
+                # ── Build the figure ──────────────────────────────────────────────────────
+                # We use go.Box / go.Violin directly (not px) so that swarm points can be
+                # added via the native `points` parameter — guaranteeing they are always
+                # aligned with their parent box/violin regardless of orientation or grouping.
 
-                if hue_used and hue_used in plot_data.columns and plot_data[hue_used].dtype.name in ['object', 'category']:
-                    custom_order_hue = st.sidebar.multiselect(
-                        f"Custom Order for hue {hue_used}",
-                        options=plot_data[hue_used].dropna().unique().tolist(),
-                        default=sorted(plot_data[hue_used].dropna().unique().tolist())
-                    )
-                    plot_data[hue_used] = pd.Categorical(plot_data[hue_used], categories=custom_order_hue, ordered=True)
-                    category_orders[hue_used] = custom_order_hue
+                point_mode = 'all' if swarm_points else False
+                jitter_val = 0.4  # spread of the swarm within each box slot
+                # go.Box uses 'boxpoints'; go.Violin uses 'points' — applied separately below
+                point_kwargs = dict(jitter=jitter_val, pointpos=0,
+                                    marker=dict(size=5, opacity=0.5, line=dict(width=0)))
 
-                if facet_col_used and facet_col_used in plot_data.columns and plot_data[facet_col_used].dtype.name in ['object', 'category']:
-                    custom_order_facet_col = st.sidebar.multiselect(
-                        f"Custom Order for col {facet_col_used}",
-                        options=plot_data[facet_col_used].dropna().unique().tolist(),
-                        default=sorted(plot_data[facet_col_used].dropna().unique().tolist())
-                    )
-                    plot_data[facet_col_used] = pd.Categorical(plot_data[facet_col_used], categories=custom_order_facet_col, ordered=True)
-                    category_orders[facet_col_used] = custom_order_facet_col
+                # Determine the groups to iterate over (hue or cat_var or single trace)
+                if hue_used:
+                    groups = plot_data[hue_used].dropna().unique().tolist()
+                    if hue_used in category_orders:
+                        groups = [g for g in category_orders[hue_used] if g in groups]
+                elif cat_var:
+                    groups = plot_data[cat_var].dropna().unique().tolist()
+                    if cat_var in category_orders:
+                        groups = [g for g in category_orders[cat_var] if g in groups]
+                else:
+                    groups = [None]  # single-variable, no grouping
 
-                if facet_row_used and facet_row_used in plot_data.columns and plot_data[facet_row_used].dtype.name in ['object', 'category']:
-                    custom_order_facet_row = st.sidebar.multiselect(
-                        f"Custom Order for row {facet_row_used}",
-                        options=plot_data[facet_row_used].dropna().unique().tolist(),
-                        default=sorted(plot_data[facet_row_used].dropna().unique().tolist())
-                    )
-                    plot_data[facet_row_used] = pd.Categorical(plot_data[facet_row_used], categories=custom_order_facet_row, ordered=True)
-                    category_orders[facet_row_used] = custom_order_facet_row
+                fig = go.Figure()
 
-                # --- Build the plot ---
-                if tplot in ["boxplot", "violin"]:
-                    plot_kwargs = dict(
-                        data_frame=plot_data,
-                        y=var_y,
-                        color_discrete_sequence=PALETTE,
-                        width=800,
-                        height=600,
-                        category_orders=category_orders
-                    )
+                def _color(i):
+                    return PALETTE[i % len(PALETTE)]
 
-                    if var_x:
-                        plot_kwargs['x'] = var_x
+                for i, grp in enumerate(groups):
                     if hue_used:
-                        plot_kwargs['color'] = hue_used
-                    if facet_col_used:
-                        plot_kwargs['facet_col'] = facet_col_used
-                    if facet_row_used:
-                        plot_kwargs['facet_row'] = facet_row_used
+                        # Each hue group is one trace; x/y split by cat_var if present
+                        mask = plot_data[hue_used] == grp
+                        sub = plot_data[mask]
+                        if cat_var:
+                            cats = sub[cat_var].dropna().unique().tolist()
+                            if cat_var in category_orders:
+                                cats = [c for c in category_orders[cat_var] if c in cats]
+                            # Build one trace per hue group; Plotly groups by x/y category automatically
+                            values = sub[num_var]
+                            cat_values = sub[cat_var]
+                        else:
+                            values = sub[num_var]
+                            cat_values = None
+                    elif cat_var:
+                        mask = plot_data[cat_var] == grp
+                        sub = plot_data[mask]
+                        values = sub[num_var]
+                        cat_values = None  # this group IS the category — use name= for the label
+                    else:
+                        sub = plot_data
+                        values = sub[num_var]
+                        cat_values = None
+
+                    trace_name = str(grp) if grp is not None else num_var
+                    color = _color(i)
+
+                    # x= / y= assignment depends on orientation and whether hue splits categories
+                    if orientation == 'v':
+                        if hue_used and cat_var:
+                            tx, ty = sub[cat_var], values
+                        elif cat_var:
+                            tx, ty = None, values          # name= is the label
+                        else:
+                            tx, ty = None, values
+                    else:  # horizontal
+                        if hue_used and cat_var:
+                            tx, ty = values, sub[cat_var]
+                        elif cat_var:
+                            tx, ty = values, None
+                        else:
+                            tx, ty = values, None
+
+                    common = dict(
+                        name=trace_name,
+                        marker_color=color,
+                        legendgroup=trace_name,
+                        **point_kwargs
+                    )
+                    if tx is not None: common['x'] = tx
+                    if ty is not None: common['y'] = ty
+                    if orientation == 'h': common['orientation'] = 'h'
 
                     if tplot == "boxplot":
-                        fig = px.box(**plot_kwargs)
-                    elif tplot == "violin":
-                        #stop_at_min_max = st.sidebar.checkbox("Stop Violin Density at Min/Max", value=False) if tplot == "violin" else False
-                        #plot_kwargs['cut'] = 0 if stop_at_min_max else None
-                        fig = px.violin(**plot_kwargs, box=True)
+                        fig.add_trace(go.Box(**common, boxpoints=point_mode))
+                    else:
+                        fig.add_trace(go.Violin(**common, points=point_mode,
+                                                box_visible=True, meanline_visible=True))
 
-                    # Swarm Points (only when hue_used is None or hue_used == var_x, and no faceting)
-                    if swarm_points:
-                        # Use Plotly Express to generate swarm points with consistent hue coloring
-                        scatter_kwargs = dict(
-                            data_frame=plot_data,
-                            x=var_x,
-                            y=var_y,
-                            color=hue_used,
-                            color_discrete_sequence=PALETTE,
-                            category_orders=category_orders
-                        )
-                        scatter_fig = px.scatter(**scatter_kwargs)
+                single_var = cat_var is None
 
-                        # Add scatter traces to the main figure
-                        for trace in scatter_fig.data:
-                            trace.update(
-                                mode='markers',
-                                marker=dict(size=5, opacity=0.6, line=dict(width=0)),
-                                showlegend=False
-                            )
-                            # Since faceting is disabled (due to show_swarm_checkbox), add to main plot
-                            fig.add_trace(trace, row=1, col=1)
+                # ── CI band / means line overlay ─────────────────────────────────────────
+                # Only drawn when: band checkbox is on, a category axis exists (need ≥2 points
+                # to draw a line), and we are NOT in single-variable mode.
+                if band_interval and cat_var and not single_var:
+                    from scipy import stats as _stats
 
-                    # Render plot for boxplot or violin
-                    plot_placeholder = st.empty()
-                    plot_placeholder.plotly_chart(fig, use_container_width=True, key=f"{tplot}_{var_x}_{var_y}_{hue_used}")
+                    # Ordered category list for the x-axis positions
+                    cat_order = category_orders.get(cat_var, sorted(plot_data[cat_var].dropna().unique().tolist()))
+
+                    # Outer loop: one line per hue group (or one line total if no hue)
+                    line_groups = plot_data[hue_used].dropna().unique().tolist() if hue_used else [None]
+                    if hue_used and hue_used in category_orders:
+                        line_groups = [g for g in category_orders[hue_used] if g in line_groups]
+
+                    for li, lgrp in enumerate(line_groups):
+                        sub_lg = plot_data[plot_data[hue_used] == lgrp] if lgrp is not None else plot_data
+                        means, lo, hi = [], [], []
+
+                        for cat in cat_order:
+                            vals = sub_lg.loc[sub_lg[cat_var] == cat, num_var].dropna()
+                            if len(vals) < 2:
+                                means.append(float('nan')); lo.append(float('nan')); hi.append(float('nan'))
+                                continue
+                            m = vals.mean()
+                            se = _stats.sem(vals)
+                            z = _stats.norm.ppf(1 - (1 - ci_level_value) / 2)
+                            means.append(m); lo.append(m - z * se); hi.append(m + z * se)
+
+                        #line_color = _color(li)
+                        line_color = "cornflowerblue"
+                        group_label = str(lgrp) if lgrp is not None else num_var
+
+                        if orientation == 'v':
+                            xs_line, ys_line = cat_order, means
+                            xs_band = cat_order + cat_order[::-1]
+                            ys_band = hi + lo[::-1]
+                        else:
+                            xs_line, ys_line = means, cat_order
+                            xs_band = hi + lo[::-1]
+                            ys_band = cat_order + cat_order[::-1]
+
+                        # Shaded CI band
+                        fig.add_trace(go.Scatter(
+                            x=xs_band, y=ys_band,
+                            fill='toself',
+                            fillcolor=line_color,
+                            opacity=0.15,
+                            line=dict(width=0),
+                            hoverinfo='skip',
+                            showlegend=False,
+                            legendgroup=group_label
+                        ))
+                        # Means line
+                        fig.add_trace(go.Scatter(
+                            x=xs_line, y=ys_line,
+                            mode='lines+markers',
+                            line=dict(color=line_color, width=2),
+                            marker=dict(size=7, color=line_color),
+                            name=f"{group_label} mean",
+                            legendgroup=group_label,
+                            showlegend=True
+                        ))
+
+                # ── Layout ────────────────────────────────────────────────────────────────
+                fig.update_layout(
+                    width=400 if (single_var and orientation == 'v') else 800,
+                    height=300 if (single_var and orientation == 'h') else 600,
+                    boxmode='group' if hue_used else 'overlay',
+                    violinmode='group' if hue_used else 'overlay',
+                )
+
+                if single_var:
+                    if orientation == 'v':
+                        fig.update_xaxes(showticklabels=False, title_text="")
+                    else:
+                        fig.update_yaxes(showticklabels=False, title_text="")
+
+                # Faceting is kept for non-swarm cases via px (swarm checkbox is hidden when facets active)
+                if facet_col_used or facet_row_used:
+                    # Fall back to px for faceted plots (swarm disabled in this path)
+                    plot_kwargs = dict(
+                        data_frame=plot_data,
+                        color_discrete_sequence=PALETTE,
+                        width=800, height=600,
+                        category_orders=category_orders
+                    )
+                    if var_y_used: plot_kwargs['y'] = var_y_used
+                    if var_x_used: plot_kwargs['x'] = var_x_used
+                    if hue_used:        plot_kwargs['color']     = hue_used
+                    if facet_col_used:  plot_kwargs['facet_col'] = facet_col_used
+                    if facet_row_used:  plot_kwargs['facet_row'] = facet_row_used
+                    fig = px.box(**plot_kwargs) if tplot == "boxplot" else px.violin(**plot_kwargs, box=True)
+
+                plot_placeholder = st.empty()
+                plot_placeholder.plotly_chart(fig,
+                                              use_container_width=(not single_var),
+                                              key=f"{tplot}_{var_x_used}_{var_y_used}_{hue_used}")
 
             # --- Lineplot ---
             elif plot_type == 'lineplot':
