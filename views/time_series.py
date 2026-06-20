@@ -650,97 +650,501 @@ def time_series_analysis():
             )
             st.plotly_chart(fig, use_container_width=True)
 
+    # ============================================================
+    # CHANGEPOINT ANALYSIS WITH PROPHET
+    # ============================================================
     elif analysis_section == "Changepoint Analysis":
-        st.subheader("🔍 Changepoint Analysis")
 
-        if use_multi and len(selected_vars) > 1:
-            st.info("🔢 Changepoint Analysis uses Prophet (univariate) → one tab per variable")
-            tabs = st.tabs(selected_vars)
-            for idx, col in enumerate(selected_vars):
-                with tabs[idx]:
-                    # Original changepoint code (adapted)
-                    df_prophet = df[[col]].reset_index()
-                    df_prophet = df_prophet.rename(columns={df_prophet.columns[0]: 'ds', col: 'y'})
-                    if time_granularity != "None":
-                        df_prophet = df_prophet.set_index('ds').resample(resample_map[time_granularity]).agg({'y': aggregation_method.lower()}).reset_index()
-                    df_prophet = df_prophet[['ds', 'y']].copy()
-                    df_prophet['y'] = df_prophet['y'].fillna(method='ffill')
+        st.subheader("🔍 Changepoint Analysis (Prophet)")
 
-                    mode = st.radio("Choose changepoint mode", ["Default (Prophet auto-detection)", "Specify Number of Changepoints"], key=f"mode_{col}")
 
-                    n_changepoints = 25
-                    if mode == "Specify Number of Changepoints":
-                        n_changepoints = st.slider("Number of changepoints to force", 1, 50, 10, key=f"ncp_{col}")
+        # --------------------------------------------------------
+        # Helper function
+        # --------------------------------------------------------
 
-                    model = Prophet(yearly_seasonality=True, weekly_seasonality=False, daily_seasonality=False,
-                                    n_changepoints=n_changepoints, seasonality_mode='additive')
-                    model.fit(df_prophet)
-                    forecast = model.predict(df_prophet)
+        def run_prophet_changepoints(
+            df_prophet,
+            changepoint_prior,
+            sensitivity,
+            forced_n,
+            use_yearly
+        ):
 
-                    deltas = np.array(model.params['delta']).mean(axis=0)
-                    abs_deltas = np.abs(deltas)
 
-                    threshold = st.slider("Slope change threshold (|Δ| > ...)", 0.0, 0.5, 0.01, 0.01, key=f"thresh_{col}")
+            # -----------------------------
+            # Adaptive number of candidates
+            # -----------------------------
 
-                    significant_cp = model.changepoints[abs_deltas > threshold] if threshold > 0.0 else model.changepoints
+            n_points = len(df_prophet)
 
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(x=df_prophet['ds'], y=df_prophet['y'], name="Observed", mode='lines'))
-                    fig.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], name="Forecast", mode='lines', line=dict(color='lightblue')))
-                    fig.add_trace(go.Scatter(x=forecast['ds'], y=forecast['trend'], name="Trend", mode='lines', line=dict(color='orange', dash='dash')))
 
-                    for cp in significant_cp:
-                        fig.add_vline(x=pd.to_datetime(cp), line=dict(color="red", dash="dot"))
+            n_candidates = min(
+                50,
+                max(5, n_points // 10)
+            )
 
-                    fig.update_layout(
-                        title=f"Changepoint Analysis – {col}",
-                        xaxis_title="Date",
-                        yaxis_title=col,
-                        xaxis_range=[df_prophet['ds'].min(), df_prophet['ds'].max()]
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-        else:
-            # Original single-var changepoint code (unchanged)
-            df_prophet = df[[selected_col]].reset_index()
-            df_prophet = df_prophet.rename(columns={df_prophet.columns[0]: 'ds', selected_col: 'y'})
-            if time_granularity != "None":
-                df_prophet = df_prophet.set_index('ds').resample(resample_map[time_granularity]).agg({'y': aggregation_method.lower()}).reset_index()
-            df_prophet = df_prophet[['ds', 'y']].copy()
-            df_prophet['y'] = df_prophet['y'].fillna(method='ffill')
 
-            mode = st.radio("Choose changepoint mode", ["Default (Prophet auto-detection)", "Specify Number of Changepoints"])
+            # -----------------------------
+            # Prophet model
+            # -----------------------------
 
-            n_changepoints = 25
-            if mode == "Specify Number of Changepoints":
-                n_changepoints = st.slider("🔢 Number of changepoints to force", 1, 50, 10)
+            model = Prophet(
+                yearly_seasonality=use_yearly,
+                weekly_seasonality=False,
+                daily_seasonality=False,
+                n_changepoints=n_candidates,
+                changepoint_range=0.95,
+                changepoint_prior_scale=changepoint_prior,
+                seasonality_mode="additive"
+            )
 
-            model = Prophet(yearly_seasonality=True, weekly_seasonality=False, daily_seasonality=False,
-                            n_changepoints=n_changepoints, seasonality_mode='additive')
+
             model.fit(df_prophet)
+
+
             forecast = model.predict(df_prophet)
 
-            deltas = np.array(model.params['delta']).mean(axis=0)
+
+
+            # -----------------------------
+            # Extract Prophet deltas
+            # -----------------------------
+
+            deltas = (
+                np.array(model.params["delta"])
+                .mean(axis=0)
+            )
+
+
             abs_deltas = np.abs(deltas)
 
-            threshold = st.slider("⚠️ Slope change threshold (|Δ| > ...)", 0.0, 0.5, 0.01, 0.01)
 
-            significant_cp = model.changepoints[abs_deltas > threshold] if threshold > 0.0 else model.changepoints
+
+            # ====================================================
+            # NEW: two selection modes
+            # ====================================================
+
+            if forced_n is None:
+
+
+                # ----- original behavior -----
+
+                threshold = np.percentile(
+                    abs_deltas,
+                    sensitivity
+                )
+
+
+                selected_idx = np.where(
+                    abs_deltas >= threshold
+                )[0]
+
+
+            else:
+
+
+                # ----- fixed number mode -----
+
+                selected_idx = (
+                    np.argsort(abs_deltas)[::-1]
+                    [:forced_n]
+                )
+
+
+
+            # chronological order for plotting
+
+            selected_idx = np.sort(selected_idx)
+
+
+
+            significant_cp = (
+                model.changepoints
+                .iloc[selected_idx]
+            )
+
+
+
+            # correct Date <-> Delta mapping
+
+            cp_table = pd.DataFrame(
+                {
+                    "Date":
+                        significant_cp.values,
+
+                    "Delta":
+                        deltas[selected_idx],
+
+                    "Abs Delta":
+                        abs_deltas[selected_idx]
+                }
+            )
+
+
+
+            if len(cp_table):
+
+                cp_table = (
+                    cp_table
+                    .sort_values(
+                        "Abs Delta",
+                        ascending=False
+                    )
+                )
+
+
+            return (
+                model,
+                forecast,
+                significant_cp,
+                cp_table
+            )
+
+
+
+        # --------------------------------------------------------
+        # Plot helper
+        # --------------------------------------------------------
+
+        def plot_changepoints(
+            df_prophet,
+            forecast,
+            changepoints,
+            title
+        ):
+
 
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df_prophet['ds'], y=df_prophet['y'], name="Observed", mode='lines'))
-            fig.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], name="Forecast", mode='lines', line=dict(color='lightblue')))
-            fig.add_trace(go.Scatter(x=forecast['ds'], y=forecast['trend'], name="Trend", mode='lines', line=dict(color='orange', dash='dash')))
 
-            for cp in significant_cp:
-                fig.add_vline(x=pd.to_datetime(cp), line=dict(color="red", dash="dot"))
+
+            fig.add_trace(
+                go.Scatter(
+                    x=df_prophet["ds"],
+                    y=df_prophet["y"],
+                    name="Observed",
+                    mode="lines",
+                    line=dict(width=2)
+                )
+            )
+
+
+            fig.add_trace(
+                go.Scatter(
+                    x=forecast["ds"],
+                    y=forecast["yhat"],
+                    name="Forecast"
+                )
+            )
+
+
+            fig.add_trace(
+                go.Scatter(
+                    x=forecast["ds"],
+                    y=forecast["trend"],
+                    name="Trend",
+                    line=dict(
+                        dash="dash"
+                    )
+                )
+            )
+
+
+
+            for cp in changepoints:
+
+                fig.add_vline(
+                    x=pd.to_datetime(cp),
+                    line=dict(
+                        color="red",
+                        dash="dot",
+                        width=2
+                    )
+                )
+
 
             fig.update_layout(
-                title="Changepoint Detection with Prophet (Trend, Forecast & Selected Δ)",
+                title=title,
                 xaxis_title="Date",
-                yaxis_title=selected_col,
-                xaxis_range=[df_prophet['ds'].min(), df_prophet['ds'].max()]
+                height=650
             )
-            st.plotly_chart(fig, use_container_width=True)
+
+
+            st.plotly_chart(
+                fig,
+                use_container_width=True
+            )
+
+
+
+        # --------------------------------------------------------
+        # Controls
+        # --------------------------------------------------------
+
+        col1, col2, col3, col4 = st.columns(4)
+
+
+
+        with col1:
+
+            changepoint_prior = st.slider(
+                "Trend flexibility",
+                0.01,
+                0.5,
+                0.15,
+                0.01,
+                help="Higher values allow more trend changes"
+            )
+
+
+
+        with col2:
+
+
+            selection_mode = st.radio(
+                "Selection mode",
+                [
+                    "Auto",
+                    "Fixed number"
+                ],
+                horizontal=True
+            )
+
+
+
+        with col3:
+
+
+            if selection_mode == "Auto":
+
+
+                sensitivity = st.slider(
+                    "Change importance percentile",
+                    50,
+                    99,
+                    90,
+                    step=1
+                )
+
+
+                forced_n = None
+
+
+
+            else:
+
+
+                forced_n = st.slider(
+                    "Number of changepoints",
+                    1,
+                    20,
+                    5,
+                    step=1
+                )
+
+
+                sensitivity = None
+
+
+
+        with col4:
+
+
+            use_yearly = st.checkbox(
+                "Yearly seasonality",
+                False
+            )
+
+
+
+        # ========================================================
+        # MULTIPLE VARIABLES
+        # ========================================================
+
+        if use_multi and len(selected_vars) > 1:
+
+
+            st.info(
+                "Prophet is univariate → one model per variable"
+            )
+
+
+            tabs = st.tabs(selected_vars)
+
+
+
+            for idx, col in enumerate(selected_vars):
+
+
+                with tabs[idx]:
+
+
+                    df_prophet = (
+                        df[[col]]
+                        .reset_index()
+                        .rename(
+                            columns={
+                                df.index.name or "index": "ds",
+                                col: "y"
+                            }
+                        )
+                    )
+
+
+
+                    if time_granularity != "None":
+
+                        df_prophet = (
+                            df_prophet
+                            .set_index("ds")
+                            .resample(
+                                resample_map[
+                                    time_granularity
+                                ]
+                            )
+                            .agg(
+                                {
+                                    "y":
+                                    aggregation_method.lower()
+                                }
+                            )
+                            .reset_index()
+                        )
+
+
+
+                    df_prophet["y"] = (
+                        df_prophet["y"]
+                        .ffill()
+                        .bfill()
+                    )
+
+
+
+                    (
+                        model,
+                        forecast,
+                        changepoints,
+                        cp_table
+
+                    ) = run_prophet_changeppoints(
+                        df_prophet,
+                        changepoint_prior,
+                        sensitivity,
+                        forced_n,
+                        use_yearly
+                    )
+
+
+
+                    plot_changepoints(
+                        df_prophet,
+                        forecast,
+                        changepoints,
+                        f"Changepoints - {col}"
+                    )
+
+
+                    st.dataframe(
+                        cp_table,
+                        use_container_width=True
+                    )
+
+
+
+        # ========================================================
+        # SINGLE VARIABLE
+        # ========================================================
+
+        else:
+
+
+            df_prophet = (
+                df[[selected_col]]
+                .reset_index()
+                .rename(
+                    columns={
+                        df.index.name or "index": "ds",
+                        selected_col: "y"
+                    }
+                )
+            )
+
+
+
+            if time_granularity != "None":
+
+                df_prophet = (
+                    df_prophet
+                    .set_index("ds")
+                    .resample(
+                        resample_map[
+                            time_granularity
+                        ]
+                    )
+                    .agg(
+                        {
+                            "y":
+                            aggregation_method.lower()
+                        }
+                    )
+                    .reset_index()
+                )
+
+
+
+            df_prophet["y"] = (
+                df_prophet["y"]
+                .ffill()
+                .bfill()
+            )
+
+
+
+            (
+                model,
+                forecast,
+                changepoints,
+                cp_table
+
+            ) = run_prophet_changepoints(
+                df_prophet,
+                changepoint_prior,
+                sensitivity,
+                forced_n,
+                use_yearly
+            )
+
+
+
+            plot_changepoints(
+                df_prophet,
+                forecast,
+                changepoints,
+                "Changepoint Detection with Prophet"
+            )
+
+
+
+            if len(cp_table):
+
+                st.write(
+                    "### Detected Changepoints"
+                )
+
+
+                st.dataframe(
+                    cp_table,
+                    use_container_width=True
+                )
+
+
+            else:
+
+                st.info(
+                    "No significant changepoints detected"
+                )
+
+    
 
     elif analysis_section == "Trend Analysis":
         st.subheader("📈 Trend Analysis")
