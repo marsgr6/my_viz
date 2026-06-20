@@ -934,21 +934,24 @@ def visualization():
                     trace_name = str(grp) if grp is not None else num_var
                     color = _color(i)
 
-                    # x= / y= assignment depends on orientation and whether hue splits categories
+                    # x= / y= assignment depends on orientation and whether hue splits categories.
+                    # For single-variable mode (no cat_var), we pin the trace explicitly to position 0
+                    # on the category-less axis so the mean marker can be placed at the *same* x=0/y=0
+                    # later, guaranteeing alignment instead of relying on Plotly's implicit auto-position.
                     if orientation == 'v':
                         if hue_used and cat_var:
                             tx, ty = sub[cat_var], values
                         elif cat_var:
                             tx, ty = None, values          # name= is the label
                         else:
-                            tx, ty = None, values
+                            tx, ty = [0] * len(values), values
                     else:  # horizontal
                         if hue_used and cat_var:
                             tx, ty = values, sub[cat_var]
                         elif cat_var:
                             tx, ty = values, None
                         else:
-                            tx, ty = values, None
+                            tx, ty = values, [0] * len(values)
 
                     common = dict(
                         name=trace_name,
@@ -963,8 +966,11 @@ def visualization():
                     if tplot == "boxplot":
                         fig.add_trace(go.Box(**common, boxpoints=point_mode))
                     else:
+                        # seaborn cut=0 equivalent: clip the KDE to the data's actual min/max
+                        # instead of letting it extend past the observed range.
                         fig.add_trace(go.Violin(**common, points=point_mode,
-                                                box_visible=True, meanline_visible=True))
+                                                box_visible=True, meanline_visible=True,
+                                                spanmode='manual', span=[values.min(), values.max()]))
 
                 single_var = cat_var is None
 
@@ -997,7 +1003,7 @@ def visualization():
                             means.append(m); lo.append(m - z * se); hi.append(m + z * se)
 
                         #line_color = _color(li)
-                        line_color = "cornflowerblue"
+                        line_color = "black"
                         group_label = str(lgrp) if lgrp is not None else num_var
 
                         if orientation == 'v':
@@ -1031,6 +1037,56 @@ def visualization():
                             showlegend=True
                         ))
 
+                elif band_interval and single_var:
+                    # Single box/violin: no category axis to draw a line across.
+                    # Show the mean as a bold marker with a CI errorbar, positioned at the
+                    # exact same slot as the box/violin trace (x=0 for vertical, y=0 horizontal).
+                    from scipy import stats as _stats
+
+                    if hue_used:
+                        hue_groups = plot_data[hue_used].dropna().unique().tolist()
+                        if hue_used in category_orders:
+                            hue_groups = [g for g in category_orders[hue_used] if g in hue_groups]
+                    else:
+                        hue_groups = [None]
+
+                    n_groups = len(hue_groups)
+                    for hi_, hgrp in enumerate(hue_groups):
+                        sub_hg = plot_data[plot_data[hue_used] == hgrp] if hgrp is not None else plot_data
+                        vals = sub_hg[num_var].dropna()
+                        if len(vals) < 2:
+                            continue
+
+                        m = vals.mean()
+                        se = _stats.sem(vals)
+                        z = _stats.norm.ppf(1 - (1 - ci_level_value) / 2)
+                        err = z * se
+
+                        # No offset needed when there's only one group — sit exactly on the box (pos 0).
+                        # With multiple hue groups, box traces are auto-spaced by Plotly's boxmode='group',
+                        # so mirror that spacing here instead of a fixed 0.15 guess.
+                        pos = 0 if n_groups == 1 else (hi_ - (n_groups - 1) / 2) * (0.8 / n_groups)
+                        label = str(hgrp) if hgrp is not None else num_var
+
+                        if orientation == 'v':
+                            fig.add_trace(go.Scatter(
+                                x=[pos], y=[m],
+                                mode='markers',
+                                marker=dict(size=12, color='crimson', symbol='circle',
+                                            line=dict(width=2, color='white')),
+                                error_y=dict(type='data', array=[err], color='crimson', thickness=3, width=8),
+                                name=f"{label} mean", legendgroup=label, showlegend=True
+                            ))
+                        else:
+                            fig.add_trace(go.Scatter(
+                                x=[m], y=[pos],
+                                mode='markers',
+                                marker=dict(size=12, color='crimson', symbol='circle',
+                                            line=dict(width=2, color='white')),
+                                error_x=dict(type='data', array=[err], color='crimson', thickness=3, width=8),
+                                name=f"{label} mean", legendgroup=label, showlegend=True
+                            ))
+
                 # ── Layout ────────────────────────────────────────────────────────────────
                 fig.update_layout(
                     width=400 if (single_var and orientation == 'v') else 800,
@@ -1041,9 +1097,9 @@ def visualization():
 
                 if single_var:
                     if orientation == 'v':
-                        fig.update_xaxes(showticklabels=False, title_text="")
+                        fig.update_xaxes(showticklabels=False, title_text="", range=[-0.5, 0.5])
                     else:
-                        fig.update_yaxes(showticklabels=False, title_text="")
+                        fig.update_yaxes(showticklabels=False, title_text="", range=[-0.5, 0.5])
 
                 # Faceting is kept for non-swarm cases via px (swarm checkbox is hidden when facets active)
                 if facet_col_used or facet_row_used:
@@ -1060,6 +1116,12 @@ def visualization():
                     if facet_col_used:  plot_kwargs['facet_col'] = facet_col_used
                     if facet_row_used:  plot_kwargs['facet_row'] = facet_row_used
                     fig = px.box(**plot_kwargs) if tplot == "boxplot" else px.violin(**plot_kwargs, box=True)
+                    if tplot == "violin":
+                        # seaborn cut=0 equivalent for the px fallback path too
+                        for trace in fig.data:
+                            ys = trace.y if orientation == 'v' else trace.x
+                            if ys is not None and len(ys) > 0:
+                                trace.update(spanmode='manual', span=[min(ys), max(ys)])
 
                 plot_placeholder = st.empty()
                 plot_placeholder.plotly_chart(fig,
