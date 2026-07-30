@@ -1171,10 +1171,19 @@ def visualization():
                         multiple = st.selectbox("Multiple", ["layer", "stack"])
                         common_norm = st.checkbox("Common Norm (Normalize)", value=False)
                         cumulative = st.checkbox("Cumulative Density", value=False)
+                        show_scatter = False
+                        kde_style = "Filled"
+                        gradient_alpha = False
                     else:
                         kind = st.selectbox("Kind", ["hist", "kde"])
                         common_norm = st.checkbox("Common Norm (Normalize)", value=False)
                         rug = st.checkbox("Add Rug Plot?", value=False)
+                        
+                        show_scatter = st.checkbox("Show Scatter Plot Overlay", value=False) if kind == "kde" else False
+                        #kde_style = st.selectbox("2D KDE Style", ["Filled (Gradient Alpha)", "Contour Lines Only"]) if kind == "kde" else "Filled (Gradient Alpha)"
+                        kde_style = "Filled (Gradient Alpha)"
+                        gradient_alpha = st.checkbox("Gradient Transparency (Density-based)", value=False) if (kind == "kde" and kde_style == "Filled (Gradient Alpha)") else False
+
 
                     def add_category_order(var_name, prefix):
                         if var_name and var_name != 'None' and plot_data[var_name].dtype.name in ['object', 'category']:
@@ -1283,7 +1292,47 @@ def visualization():
                             plot_data, x=var_x, y=var_y, color=hue_var if hue_var != 'None' else None, facet_col=facet_col if facet_col != 'None' else None, facet_row=facet_row if facet_row != 'None' else None,
                             color_discrete_sequence=PALETTE, marginal_x='rug' if rug else None, marginal_y='rug' if rug else None, width=800, height=600, category_orders=category_orders
                         )
+                        
+                        # Clean up layout: hide useless colorbar and update contour fills
+                        fig.update_layout(coloraxis_showscale=False)
+                        
+                        if kde_style == "Contour Lines Only":
+                            for trace in fig.data:
+                                if hasattr(trace, 'contours'):
+                                    trace.update(fillcolor=None)
+                        elif gradient_alpha:
+                            for trace in fig.data:
+                                if hasattr(trace, 'contours'):
+                                    trace.update(contours=dict(coloring='heatmap'), showscale=False, showlegend=False)
+
+                        # Render clean scatter overlay while preserving hue group colors and applying density-driven alpha
+                        if show_scatter:
+                            sub_scatter = plot_data.dropna(subset=[var_x, var_y])
+                            if not sub_scatter.empty:
+                                scatter_fig = px.scatter(
+                                    sub_scatter, x=var_x, y=var_y, color=hue_var if hue_var != 'None' else None,
+                                    facet_col=facet_col if facet_col != 'None' else None, facet_row=facet_row if facet_row != 'None' else None,
+                                    color_discrete_sequence=PALETTE
+                                )
+                                
+                                # Map clean density-based opacity per group without losing hue assignment
+                                for trace in scatter_fig.data:
+                                    if 'x' in trace and trace.x is not None and len(trace.x) > 2:
+                                        x_vals = np.array(trace.x, dtype=float)
+                                        y_vals = np.array(trace.y, dtype=float)
+                                        xy_coords = np.vstack([x_vals, y_vals])
+                                        try:
+                                            pt_density = gaussian_kde(xy_coords)(xy_coords)
+                                            pt_alpha = 0.15 + 0.7 * (pt_density - pt_density.min()) / (pt_density.max() - pt_density.min() + 1e-9)
+                                        except Exception:
+                                            pt_alpha = 0.5
+                                        
+                                        base_color = trace.marker.color if hasattr(trace.marker, 'color') else 'rgba(100,100,100,1)'
+                                        trace.update(marker=dict(size=4, opacity=pt_alpha))
+                                    fig.add_trace(trace)
+
                     st.plotly_chart(fig, use_container_width=True)
+
 
             elif plot_type == 'scatter':
                 var_x = global_var_x
