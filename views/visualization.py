@@ -1305,17 +1305,19 @@ def visualization():
                                 if hasattr(trace, 'contours'):
                                     trace.update(contours=dict(coloring='heatmap'), showscale=False, showlegend=False)
 
-                        # Render clean scatter overlay while preserving hue group colors and applying density-driven alpha
+                        # Render clean scatter overlay while respecting category orders and subplots
                         if show_scatter:
                             sub_scatter = plot_data.dropna(subset=[var_x, var_y])
                             if not sub_scatter.empty:
                                 scatter_fig = px.scatter(
                                     sub_scatter, x=var_x, y=var_y, color=hue_var if hue_var != 'None' else None,
                                     facet_col=facet_col if facet_col != 'None' else None, facet_row=facet_row if facet_row != 'None' else None,
-                                    color_discrete_sequence=PALETTE
+                                    color_discrete_sequence=PALETTE, category_orders=category_orders
                                 )
                                 
-                                # Map clean density-based opacity per group without losing hue assignment
+                                # Map clean density-based opacity per group and prevent duplicate legend entries
+                                existing_legend_names = {trace.name for trace in fig.data}
+                                
                                 for trace in scatter_fig.data:
                                     if 'x' in trace and trace.x is not None and len(trace.x) > 2:
                                         x_vals = np.array(trace.x, dtype=float)
@@ -1327,8 +1329,17 @@ def visualization():
                                         except Exception:
                                             pt_alpha = 0.5
                                         
-                                        base_color = trace.marker.color if hasattr(trace.marker, 'color') else 'rgba(100,100,100,1)'
-                                        trace.update(marker=dict(size=4, opacity=pt_alpha))
+                                        # Hide legend for scatter if a contour trace with the same name already exists
+                                        show_leg = True
+                                        if trace.name in existing_legend_names:
+                                            show_leg = False
+                                        else:
+                                            existing_legend_names.add(trace.name)
+
+                                        trace.update(
+                                            marker=dict(size=4, opacity=pt_alpha),
+                                            showlegend=show_leg
+                                        )
                                     fig.add_trace(trace)
 
                     st.plotly_chart(fig, use_container_width=True)
