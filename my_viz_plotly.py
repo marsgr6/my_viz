@@ -5,7 +5,7 @@ def main():
     st.set_page_config(layout="wide", page_title="EDAViz App", page_icon="🚀")
     with st.sidebar:
         selected = option_menu(
-            menu_title="Navigation",
+            menu_title="EDAViz",
             options=["Home", "Missing Data Imputation", "Visualization", "Time Series", "About"],
             icons=["house", "gear", "bar-chart", "clock", "info-circle"],
             menu_icon="cast",
